@@ -42,7 +42,6 @@ impl Clock {
         self.set(now);
     }
 
-    #[allow(dead_code)] // used once speed control lands (phase 6)
     pub fn set_speed(&mut self, speed: f64) {
         let now = self.time();
         self.speed = speed;

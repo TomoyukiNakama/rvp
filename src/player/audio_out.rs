@@ -19,6 +19,9 @@ pub(super) struct AudioChunk {
     /// Interleaved samples at the device rate/channel count.
     pub samples: Vec<f32>,
     pub offset: usize,
+    /// Playback speed the samples were tempo-adjusted for: one device sample
+    /// advances media time by `speed / rate`.
+    pub speed: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +33,8 @@ pub(super) struct AudioClockSample {
     pub at: Instant,
     /// pts just past the last delivered sample.
     pub end_pts: f64,
+    /// Media seconds per wall-clock second for this buffer.
+    pub speed: f32,
 }
 
 pub(super) struct AudioQueue {
@@ -42,6 +47,8 @@ pub(super) struct AudioQueue {
     /// current serial is on screen (keeps A/V aligned after open/seek).
     pub hold: bool,
     pub gain: f32,
+    /// Requested playback speed (read by the decoder to configure `atempo`).
+    pub speed: f32,
     pub clock: Option<AudioClockSample>,
 }
 
@@ -73,8 +80,8 @@ impl AudioShared {
             return None;
         }
         let t = match now.checked_duration_since(c.at) {
-            Some(after) => c.pts + after.as_secs_f64(),
-            None => c.pts - c.at.duration_since(now).as_secs_f64(),
+            Some(after) => c.pts + after.as_secs_f64() * f64::from(c.speed),
+            None => c.pts - c.at.duration_since(now).as_secs_f64() * f64::from(c.speed),
         };
         Some(t.min(c.end_pts))
     }
@@ -106,6 +113,7 @@ impl AudioDevice {
                 paused: true,
                 hold: true,
                 gain: 1.0,
+                speed: 1.0,
                 clock: None,
             }),
             rate: config.sample_rate,
@@ -168,7 +176,7 @@ fn fill(shared: &AudioShared, out: &mut [f32], delay: Duration) {
     let gain = q.gain;
     let serial = q.serial;
     let mut written = 0;
-    let mut first_pts = None;
+    let mut first: Option<(f64, f32)> = None;
     while written < out.len() {
         let Some(chunk) = q.chunks.front_mut() else { break };
         if chunk.serial != serial || chunk.offset >= chunk.samples.len() {
@@ -177,8 +185,9 @@ fn fill(shared: &AudioShared, out: &mut [f32], delay: Duration) {
             q.queued_frames = q.queued_frames.saturating_sub(frames);
             continue;
         }
-        if first_pts.is_none() {
-            first_pts = Some(chunk.pts + (chunk.offset / ch) as f64 / rate);
+        if first.is_none() {
+            let speed = f64::from(chunk.speed);
+            first = Some((chunk.pts + (chunk.offset / ch) as f64 / rate * speed, chunk.speed));
         }
         let n = (out.len() - written).min(chunk.samples.len() - chunk.offset);
         for (o, s) in out[written..written + n]
@@ -196,12 +205,13 @@ fn fill(shared: &AudioShared, out: &mut [f32], delay: Duration) {
         }
     }
 
-    if let Some(pts) = first_pts {
+    if let Some((pts, speed)) = first {
         q.clock = Some(AudioClockSample {
             serial,
             pts,
             at: Instant::now() + delay,
-            end_pts: pts + (written / ch) as f64 / rate,
+            end_pts: pts + (written / ch) as f64 / rate * f64::from(speed),
+            speed,
         });
     }
 }

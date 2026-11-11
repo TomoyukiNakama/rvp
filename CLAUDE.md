@@ -8,7 +8,7 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Test media: `scripts/gen-test-media.sh` → `target/test-media/`
 - `cargo test` does **not** rebuild `target/debug/rvp`; run `cargo build` before launching the app.
 - Keep manual runs out of the real config/state: `XDG_CONFIG_HOME=$TMPDIR/xdg/config XDG_STATE_HOME=$TMPDIR/xdg/state`.
-  `RVP_DEBUG_PLAYLIST=1` starts with the playlist panel open (for screenshots).
+  `RVP_DEBUG_PLAYLIST=1` starts with the playlist panel open, `RVP_DEBUG_SPEED=2` at 2× (for screenshots).
 - Screenshot without a compositor tool (grim doesn't work on GNOME/Wayland):
   `RVP_SCREENSHOT=out.png RVP_SCREENSHOT_AFTER=2 RVP_SCREENSHOT_EXIT=1 cargo run -- <video>` (see `src/debug_shot.rs`)
 
@@ -25,6 +25,10 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   `Player::update` disciplines the system `Clock` to `audible_time()` (audio = master); without fresh audio the clock free-runs.
   `hold` keeps audio silent until the first video frame after open/seek is shown.
   Resampling uses swresample via raw FFI (`Resampler`), not ffmpeg-next's wrapper (its output buffer is too small when up-sampling).
+- Speed: `Player::set_speed` scales the system clock and sets `AudioQueue::speed`; the audio decoder runs
+  `player/tempo.rs` (libavfilter `atempo`, chained for < 0.5×) only while speed ≠ 1. Each `AudioChunk` carries its
+  speed, so one device sample = `speed / rate` media seconds. `atempo` output pts are in the *output* domain —
+  media pts are derived from the emitted sample count instead.
 - Video frames: `player/frame.rs` — decoder output is kept as YUV planes (owned `ffmpeg::frame::Video`, no copy) tagged with
   layout (planar / semi-planar / RGBA fallback), bit depth, matrix (BT.601/709/2020; untagged → HD 709, SD 601) and range.
   Formats the shader can't take go through swscale (`FrameConverter`). 16-bit planes need `TEXTURE_FORMAT_16BIT_NORM`

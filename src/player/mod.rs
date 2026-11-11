@@ -9,6 +9,7 @@ mod audio_out;
 mod clock;
 mod demux;
 mod frame;
+mod tempo;
 mod video_decode;
 
 use std::path::Path;
@@ -105,6 +106,7 @@ pub struct Player {
     eof: bool,
     audio: Option<Arc<AudioShared>>,
     audio_eof: bool,
+    speed: f32,
     error: Option<String>,
 }
 
@@ -226,6 +228,7 @@ impl Player {
                     q.clock = None;
                     q.hold = true;
                     q.paused = false;
+                    q.speed = 1.0;
                 }
                 let (tx, rx) = bounded(AUDIO_PACKET_QUEUE);
                 let ctx = audio_decode::AudioDecodeCtx {
@@ -302,6 +305,7 @@ impl Player {
             eof: false,
             audio: audio_shared,
             audio_eof: false,
+            speed: 1.0,
             error: audio_error,
         })
     }
@@ -311,6 +315,19 @@ impl Player {
         if let Some(a) = &self.audio {
             let v = volume.clamp(0.0, 1.5);
             a.lock().gain = if muted { 0.0 } else { v * v * v };
+        }
+    }
+
+    pub const MIN_SPEED: f32 = 0.25;
+    pub const MAX_SPEED: f32 = 4.0;
+
+    /// Playback speed; audio keeps its pitch (`atempo`).
+    pub fn set_speed(&mut self, speed: f32) {
+        let speed = speed.clamp(Self::MIN_SPEED, Self::MAX_SPEED);
+        self.speed = speed;
+        self.clock.set_speed(f64::from(speed));
+        if let Some(a) = &self.audio {
+            a.lock().speed = speed;
         }
     }
 
@@ -501,7 +518,9 @@ impl Player {
             return None;
         }
         let wait = match &self.pending {
-            Some(f) if !self.waiting_first_frame => (f.pts - self.clock.time()).max(0.0),
+            Some(f) if !self.waiting_first_frame => {
+                ((f.pts - self.clock.time()) / f64::from(self.speed)).max(0.0)
+            }
             // Waiting on the decoder: poll briefly.
             _ => 0.005,
         };
@@ -637,6 +656,23 @@ mod tests {
             p.update();
             assert!(Instant::now() < deadline, "never reached Ended");
             std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Speed change: audio (atempo) keeps driving the clock at the new rate.
+        for (speed, secs) in [(2.0f32, 1.5), (0.5, 1.5), (1.0, 0.5)] {
+            p.seek(2.0, true);
+            p.play();
+            p.set_speed(speed);
+            next_frame(&mut p);
+            run_for(&mut p, 0.4); // let the old-speed queue drain
+            let start = p.position();
+            let drift = run_for(&mut p, secs);
+            let advanced = p.position() - start;
+            let want = secs * f64::from(speed);
+            assert!((advanced - want).abs() < 0.08 * want.max(1.0), "speed {speed}: advanced {advanced}, want {want}");
+            assert!(drift < 0.03, "speed {speed}: A/V drift {drift}");
+            let audible = p.audio.as_ref().unwrap().audible_time(p.serial.load(Ordering::Acquire));
+            assert!(audible.is_some(), "speed {speed}: audio should be playing");
         }
 
         // Switching files on the same device starts audio promptly and in sync.

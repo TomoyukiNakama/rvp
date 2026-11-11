@@ -9,6 +9,7 @@ use ffmpeg_next as ffmpeg;
 use ffmpeg::ffi;
 
 use super::audio_out::{AudioChunk, AudioShared};
+use super::tempo::Tempo;
 use super::{PacketMsg, PlayerEvent};
 
 /// Upper bound of decoded audio waiting for the device.
@@ -30,6 +31,8 @@ struct State {
     drop_before: Option<f64>,
     next_pts: Option<f64>,
     resampler: Option<Resampler>,
+    /// Active only while speed ≠ 1.
+    tempo: Option<Tempo>,
     frame: ffmpeg::frame::Audio,
 }
 
@@ -39,6 +42,7 @@ pub(super) fn run(mut c: AudioDecodeCtx) {
         drop_before: None,
         next_pts: None,
         resampler: None,
+        tempo: None,
         frame: ffmpeg::frame::Audio::empty(),
     };
 
@@ -62,6 +66,7 @@ pub(super) fn run(mut c: AudioDecodeCtx) {
                 st.drop_before = drop_before;
                 st.next_pts = None;
                 st.resampler = None; // drop buffered resampler state
+                st.tempo = None;
             }
             PacketMsg::Eof { serial } => {
                 if serial != st.serial {
@@ -69,6 +74,16 @@ pub(super) fn run(mut c: AudioDecodeCtx) {
                 }
                 let _ = c.decoder.send_eof();
                 drain(&mut c, &mut st);
+                if let Some(mut t) = st.tempo.take() {
+                    match t.finish() {
+                        Ok(outs) => {
+                            for o in outs {
+                                push(&c, st.serial, o.pts, o.samples, t.speed());
+                            }
+                        }
+                        Err(e) => log::warn!("atempo flush: {e}"),
+                    }
+                }
                 c.decoder.flush();
                 if c.event_tx.send(PlayerEvent::AudioEof { serial }).is_err() {
                     return;
@@ -137,12 +152,36 @@ fn drain(c: &mut AudioDecodeCtx, st: &mut State) {
             continue;
         }
 
-        push(c, st.serial, pts, samples);
+        let speed = c.shared.lock().speed;
+        if (speed - 1.0).abs() < 1e-3 {
+            st.tempo = None;
+            push(c, st.serial, pts, samples, 1.0);
+            continue;
+        }
+        if st.tempo.as_ref().is_none_or(|t| t.speed() != speed) {
+            match Tempo::new(speed, out_rate, out_ch) {
+                Ok(t) => st.tempo = Some(t),
+                Err(e) => {
+                    log::error!("atempo init failed ({speed}x): {e}");
+                    push(c, st.serial, pts, samples, 1.0);
+                    continue;
+                }
+            }
+        }
+        let Some(tempo) = st.tempo.as_mut() else { continue };
+        match tempo.process(pts, &samples) {
+            Ok(outs) => {
+                for o in outs {
+                    push(c, st.serial, o.pts, o.samples, speed);
+                }
+            }
+            Err(e) => log::error!("atempo failed: {e}"),
+        }
     }
 }
 
 /// Waits for room in the queue, then appends. Gives up if the serial changes.
-fn push(c: &AudioDecodeCtx, serial: u64, pts: f64, samples: Vec<f32>) {
+fn push(c: &AudioDecodeCtx, serial: u64, pts: f64, samples: Vec<f32>, speed: f32) {
     let max_frames = (MAX_QUEUED_SECS * f64::from(c.shared.rate)) as usize;
     let frames = samples.len() / usize::from(c.shared.channels);
     loop {
@@ -161,6 +200,7 @@ fn push(c: &AudioDecodeCtx, serial: u64, pts: f64, samples: Vec<f32>) {
                     pts,
                     samples,
                     offset: 0,
+                    speed,
                 });
                 return;
             }

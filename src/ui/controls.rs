@@ -4,6 +4,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, RichText, Stroke, U
 use egui_phosphor::regular as icon;
 
 use super::seekbar::{SeekEvent, seek_bar};
+use super::speed::speed_button;
 use super::volume::{VolumeActions, volume_control};
 use super::widgets::{format_time, icon_button, icon_button_ex};
 use crate::player::PlayState;
@@ -20,6 +21,7 @@ pub struct ControlsModel {
     pub has_prev: bool,
     pub has_next: bool,
     pub playlist_open: bool,
+    pub speed: f32,
 }
 
 #[derive(Default)]
@@ -31,6 +33,7 @@ pub struct ControlsActions {
     pub prev: bool,
     pub next: bool,
     pub toggle_playlist: bool,
+    pub speed: Option<f32>,
 }
 
 /// Rect the control bar occupies (used for hover detection by the caller).
@@ -116,6 +119,8 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> 
                     ui.add_space(4.0);
                     a.volume = volume_control(ui, m.volume, m.muted);
                 }
+                ui.add_space(2.0);
+                a.speed = speed_button(ui, m.speed);
                 ui.add_space(6.0);
                 let total = m.duration.map(format_time).unwrap_or_else(|| "--:--".into());
                 ui.add(egui::Label::new(RichText::new(total).color(color::TEXT_DIM).monospace()).selectable(false));

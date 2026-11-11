@@ -18,6 +18,7 @@ use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
 use crate::ui::playlist_panel::{self, PlaylistAction, PlaylistModel};
 use crate::ui::seekbar::SeekEvent;
+use crate::ui::speed::{self, format_speed};
 use crate::ui::volume::MAX_VOLUME;
 use crate::ui::widgets::{format_time, icon_font};
 use crate::ui::window;
@@ -63,6 +64,8 @@ pub struct RvpApp {
     dialog_rx: Receiver<Option<DialogResult>>,
     dialog_open: bool,
     wheel_accum: f32,
+    /// Playback speed, kept across files for the session (not persisted).
+    speed: f32,
     debug_shot: Option<crate::debug_shot::DebugShot>,
 }
 
@@ -119,6 +122,8 @@ impl RvpApp {
             dialog_rx,
             dialog_open: false,
             wheel_accum: 0.0,
+            // Debug aid for screenshots (see debug_shot.rs).
+            speed: std::env::var("RVP_DEBUG_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0),
             debug_shot: crate::debug_shot::DebugShot::from_env(),
         };
         if let Some(e) = audio_error {
@@ -167,6 +172,7 @@ impl RvpApp {
         match Player::open(&path, ctx.clone(), self.audio.as_ref()) {
             Ok(mut p) => {
                 p.set_volume(self.config.volume, self.config.muted);
+                p.set_speed(self.speed);
                 if let Some(e) = p.take_error() {
                     self.show_osd(ctx, e, true);
                 }
@@ -366,6 +372,14 @@ impl RvpApp {
         self.show_osd(ctx, text, false);
     }
 
+    fn set_speed(&mut self, ctx: &egui::Context, speed: f32) {
+        self.speed = speed.clamp(Player::MIN_SPEED, Player::MAX_SPEED);
+        if let Some(p) = self.player.as_mut() {
+            p.set_speed(self.speed);
+        }
+        self.show_osd(ctx, format!("速度 {}", format_speed(self.speed)), false);
+    }
+
     fn toggle_fullscreen(ctx: &egui::Context) {
         let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
@@ -415,6 +429,16 @@ impl RvpApp {
         }
         if key(Modifiers::NONE, Key::B) {
             self.prev(ctx);
+        }
+
+        if key(Modifiers::NONE, Key::CloseBracket) {
+            self.set_speed(ctx, speed::step(self.speed, true));
+        }
+        if key(Modifiers::NONE, Key::OpenBracket) {
+            self.set_speed(ctx, speed::step(self.speed, false));
+        }
+        if key(Modifiers::NONE, Key::Backspace) {
+            self.set_speed(ctx, 1.0);
         }
 
         if key(Modifiers::NONE, Key::ArrowUp) {
@@ -663,6 +687,7 @@ impl eframe::App for RvpApp {
                 has_prev: true, // restarts the current file at least
                 has_next: self.playlist.has_next(),
                 playlist_open: self.show_playlist,
+                speed: self.speed,
             };
             let a = controls::control_bar(ui, window, &model, alpha);
             if let Some(p) = self.player.as_mut() {
@@ -691,6 +716,9 @@ impl eframe::App for RvpApp {
             }
             if a.toggle_playlist {
                 self.show_playlist = !self.show_playlist;
+            }
+            if let Some(s) = a.speed {
+                self.set_speed(&ctx, s);
             }
         }
 
