@@ -8,15 +8,17 @@ use egui::{
 };
 use egui_phosphor::regular as icon;
 
-use crate::player::{PlayState, Player};
+use crate::player::{AudioDevice, PlayState, Player};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
 use crate::ui::seekbar::SeekEvent;
+use crate::ui::volume::MAX_VOLUME;
 use crate::ui::widgets::icon_font;
 use crate::ui::window;
 
 const SEEK_SMALL: f64 = 5.0;
 const SEEK_LARGE: f64 = 60.0;
+const VOLUME_STEP: f32 = 0.05;
 
 struct Osd {
     text: String,
@@ -26,6 +28,7 @@ struct Osd {
 
 pub struct RvpApp {
     player: Option<Player>,
+    audio: Option<AudioDevice>,
     texture: Option<TextureHandle>,
     video_aspect: f32,
     last_activity: f64,
@@ -33,6 +36,9 @@ pub struct RvpApp {
     open_tx: Sender<PathBuf>,
     open_rx: Receiver<PathBuf>,
     dialog_open: bool,
+    volume: f32,
+    muted: bool,
+    wheel_accum: f32,
     debug_shot: Option<crate::debug_shot::DebugShot>,
 }
 
@@ -41,9 +47,20 @@ impl RvpApp {
         crate::fonts::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
 
+        // Open the audio device up front: it plays a few hundred ms of silence
+        // while starting, which would otherwise delay the first file.
+        let (audio, audio_error) = match AudioDevice::open() {
+            Ok(d) => (Some(d), None),
+            Err(e) => {
+                log::warn!("audio device unavailable: {e:#}");
+                (None, Some(format!("音声出力を開けません: {e:#}")))
+            }
+        };
+
         let (open_tx, open_rx) = unbounded();
         let mut app = Self {
             player: None,
+            audio,
             texture: None,
             video_aspect: 16.0 / 9.0,
             last_activity: 0.0,
@@ -51,8 +68,14 @@ impl RvpApp {
             open_tx,
             open_rx,
             dialog_open: false,
+            volume: 1.0,
+            muted: false,
+            wheel_accum: 0.0,
             debug_shot: crate::debug_shot::DebugShot::from_env(),
         };
+        if let Some(e) = audio_error {
+            app.show_osd(&cc.egui_ctx, e, true);
+        }
         // Playlist support comes later; for now open the first argument.
         if let Some(first) = files.into_iter().next() {
             app.open(&cc.egui_ctx, first);
@@ -63,8 +86,12 @@ impl RvpApp {
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         // Drop the old player first so its threads stop before new ones start.
         self.player = None;
-        match Player::open(&path, ctx.clone()) {
-            Ok(p) => {
+        match Player::open(&path, ctx.clone(), self.audio.as_ref()) {
+            Ok(mut p) => {
+                p.set_volume(self.volume, self.muted);
+                if let Some(e) = p.take_error() {
+                    self.show_osd(ctx, e, true);
+                }
                 let info = p.info();
                 self.video_aspect = if info.height > 0 {
                     info.width as f32 / info.height as f32
@@ -116,6 +143,20 @@ impl RvpApp {
         });
     }
 
+    fn set_volume(&mut self, ctx: &egui::Context, volume: f32, muted: bool) {
+        self.volume = (volume * 100.0).round().clamp(0.0, MAX_VOLUME * 100.0) / 100.0;
+        self.muted = muted;
+        if let Some(p) = self.player.as_mut() {
+            p.set_volume(self.volume, self.muted);
+        }
+        let text = if muted {
+            "ミュート".to_owned()
+        } else {
+            format!("音量 {:.0}%", self.volume * 100.0)
+        };
+        self.show_osd(ctx, text, false);
+    }
+
     fn toggle_fullscreen(ctx: &egui::Context) {
         let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!fs));
@@ -155,6 +196,16 @@ impl RvpApp {
         }
         if key(Modifiers::NONE, Key::Escape) && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+        }
+
+        if key(Modifiers::NONE, Key::ArrowUp) {
+            self.set_volume(ctx, self.volume + VOLUME_STEP, false);
+        }
+        if key(Modifiers::NONE, Key::ArrowDown) {
+            self.set_volume(ctx, self.volume - VOLUME_STEP, false);
+        }
+        if key(Modifiers::NONE, Key::M) {
+            self.set_volume(ctx, self.volume, !self.muted);
         }
 
         let mut osd = None;
@@ -302,6 +353,30 @@ impl eframe::App for RvpApp {
         } else if bg.drag_started() && !fullscreen {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
+        // Mouse wheel over the video adjusts volume (one notch ≈ 5%).
+        if bg.hovered() && self.player.is_some() {
+            // Mouse notches arrive in lines; touchpads in points (accumulate).
+            let lines: f32 = ctx.input(|i| {
+                i.raw
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
+                            egui::MouseWheelUnit::Line => delta.y,
+                            egui::MouseWheelUnit::Point => delta.y / 50.0,
+                            egui::MouseWheelUnit::Page => delta.y * 3.0,
+                        }),
+                        _ => None,
+                    })
+                    .sum()
+            });
+            self.wheel_accum += lines;
+            let steps = self.wheel_accum.trunc();
+            if steps != 0.0 {
+                self.wheel_accum -= steps;
+                self.set_volume(&ctx, self.volume + steps * VOLUME_STEP, false);
+            }
+        }
 
         // Video.
         if let Some(tex) = &self.texture {
@@ -345,6 +420,9 @@ impl eframe::App for RvpApp {
                 position: p.position(),
                 duration: p.info().duration,
                 fullscreen,
+                volume: self.volume,
+                muted: self.muted,
+                has_audio: p.info().audio_codec.is_some(),
             };
             let a = controls::control_bar(ui, window, &model, alpha);
             if a.toggle_pause {
@@ -357,6 +435,11 @@ impl eframe::App for RvpApp {
             }
             if a.toggle_fullscreen {
                 Self::toggle_fullscreen(&ctx);
+            }
+            if a.volume.toggle_mute {
+                self.set_volume(&ctx, self.volume, !self.muted);
+            } else if let Some(v) = a.volume.set {
+                self.set_volume(&ctx, v, false);
             }
         }
 

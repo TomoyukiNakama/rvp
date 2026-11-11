@@ -15,8 +15,13 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - eframe 0.36 uses `App::ui(&mut self, ui, frame)` (not `update`).
 
 ## Architecture (src/)
-- `player/` — engine. `Player` (UI-thread API) + `demux.rs` thread + `video_decode.rs` thread, linked by bounded crossbeam channels.
-  Seeks bump a **serial**; stale packets/frames are dropped at every stage. Clock in `clock.rs` (audio will become master in phase 2).
+- `player/` — engine. `Player` (UI-thread API) + `demux.rs` thread + `video_decode.rs` / `audio_decode.rs` threads, linked by bounded crossbeam channels.
+  Seeks bump a **serial**; stale packets/frames/audio chunks are dropped at every stage. Serials are unique across players (`NEXT_SERIAL_BASE`).
+- Audio: `audio_out.rs` — one `AudioDevice` (cpal stream) per app, shared by successive players (re-opening a device costs ~200 ms of start-up silence).
+  Decoder pushes pts-tagged f32 chunks into a mutex queue; the device callback publishes an `AudioClockSample`.
+  `Player::update` disciplines the system `Clock` to `audible_time()` (audio = master); without fresh audio the clock free-runs.
+  `hold` keeps audio silent until the first video frame after open/seek is shown.
+  Resampling uses swresample via raw FFI (`Resampler`), not ffmpeg-next's wrapper (its output buffer is too small when up-sampling).
 - `app.rs` — `eframe::App`: input, texture upload, layout of chrome over the video.
 - `ui/` — `window.rs` (borderless window: title bar, resize grips, aspect fit), `controls.rs` (floating bar), `seekbar.rs`, `widgets.rs`.
 - `theme.rs` — design tokens (colors/sizes/motion) + egui style. Dark theme only. Use tokens, never ad-hoc colors.

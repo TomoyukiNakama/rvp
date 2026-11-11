@@ -23,6 +23,7 @@ pub mod color {
     pub const TRACK: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 40);
 
     pub const CLOSE_HOVER: Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
+    pub const WARN: Color32 = Color32::from_rgb(0xff, 0xb4, 0x5c);
     pub const DANGER: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
 }
 

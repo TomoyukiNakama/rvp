@@ -4,6 +4,8 @@
 //! were produced under, and anything with an outdated serial is discarded at
 //! each stage (same scheme as ffplay).
 
+mod audio_decode;
+mod audio_out;
 mod clock;
 mod demux;
 mod video_decode;
@@ -18,9 +20,16 @@ use anyhow::{Context as _, anyhow};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ffmpeg_next as ffmpeg;
 
+pub use audio_out::AudioDevice;
+use audio_out::AudioShared;
 use clock::Clock;
 
-const PACKET_QUEUE: usize = 64;
+/// Serial numbers are unique across players so that a shared audio queue can
+/// never accept stale chunks from a previous player's threads.
+static NEXT_SERIAL_BASE: AtomicU64 = AtomicU64::new(1 << 32);
+
+const PACKET_QUEUE: usize = 128;
+const AUDIO_PACKET_QUEUE: usize = 256;
 const FRAME_QUEUE: usize = 6;
 
 /// A decoded, display-ready video frame.
@@ -49,6 +58,8 @@ pub struct MediaInfo {
     pub width: u32,
     pub height: u32,
     pub codec: String,
+    /// Audio codec name; `None` when the file has no audio or output failed.
+    pub audio_codec: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +94,7 @@ pub(crate) enum PacketMsg {
 
 pub(crate) enum PlayerEvent {
     Eof { serial: u64 },
+    AudioEof { serial: u64 },
     Error(String),
 }
 
@@ -108,11 +120,36 @@ pub struct Player {
     last_shown_pts: f64,
     last_shown_end: f64,
     eof: bool,
+    audio: Option<Arc<AudioShared>>,
+    audio_eof: bool,
     error: Option<String>,
 }
 
+struct AudioSetup {
+    index: usize,
+    time_base: f64,
+    decoder: ffmpeg::decoder::Audio,
+}
+
+fn setup_audio(input: &ffmpeg::format::context::Input) -> anyhow::Result<Option<AudioSetup>> {
+    let Some(stream) = input.streams().best(ffmpeg::media::Type::Audio) else {
+        return Ok(None);
+    };
+    let tb = stream.time_base();
+    let decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?
+        .decoder()
+        .audio()
+        .context("音声デコーダを開けませんでした")?;
+    Ok(Some(AudioSetup {
+        index: stream.index(),
+        time_base: f64::from(tb.numerator()) / f64::from(tb.denominator()),
+        decoder,
+    }))
+}
+
 impl Player {
-    pub fn open(path: &Path, repaint: egui::Context) -> anyhow::Result<Self> {
+    /// Opens `path`. Audio plays through `audio` when given (and the file has audio).
+    pub fn open(path: &Path, repaint: egui::Context, audio: Option<&AudioDevice>) -> anyhow::Result<Self> {
         let input = ffmpeg::format::input(path)
             .with_context(|| format!("開けませんでした: {}", path.display()))?;
 
@@ -146,6 +183,14 @@ impl Player {
             .video()
             .context("映像デコーダを開けませんでした")?;
 
+        let (audio_setup, audio_error) = match audio.map(|_| setup_audio(&input)).transpose() {
+            Ok(a) => (a.flatten(), None),
+            Err(e) => {
+                log::warn!("audio disabled: {e:#}");
+                (None, Some(format!("音声を再生できません: {e:#}")))
+            }
+        };
+
         // SAFETY: plain field reads on a valid, opened AVFormatContext.
         let (start_time, duration) = unsafe {
             let p = input.as_ptr();
@@ -159,7 +204,6 @@ impl Player {
         };
 
         let info = MediaInfo {
-
             title: input
                 .metadata()
                 .get("title")
@@ -177,13 +221,47 @@ impl Player {
                 .codec()
                 .map(|c| c.name().to_owned())
                 .unwrap_or_default(),
+            audio_codec: audio_setup
+                .as_ref()
+                .and_then(|a| a.decoder.codec().map(|c| c.name().to_owned())),
         };
 
-        let serial = Arc::new(AtomicU64::new(0));
+        let base = NEXT_SERIAL_BASE.fetch_add(1 << 32, Ordering::Relaxed);
+        let serial = Arc::new(AtomicU64::new(base));
         let (cmd_tx, cmd_rx) = unbounded();
         let (video_tx, video_rx) = bounded(PACKET_QUEUE);
         let (frame_tx, frame_rx) = bounded(FRAME_QUEUE);
         let (event_tx, event_rx) = unbounded();
+
+        let (audio_route, audio_shared) = match (audio_setup, audio) {
+            (Some(a), Some(dev)) => {
+                {
+                    let mut q = dev.shared.lock();
+                    q.serial = base;
+                    q.chunks.clear();
+                    q.queued_frames = 0;
+                    q.clock = None;
+                    q.hold = true;
+                    q.paused = false;
+                }
+                let (tx, rx) = bounded(AUDIO_PACKET_QUEUE);
+                let ctx = audio_decode::AudioDecodeCtx {
+                    decoder: a.decoder,
+                    time_base: a.time_base,
+                    start_time,
+                    shared: dev.shared.clone(),
+                    serial: serial.clone(),
+                    pkt_rx: rx,
+                    event_tx: event_tx.clone(),
+                    initial_serial: base,
+                };
+                thread::Builder::new()
+                    .name("rvp-adec".into())
+                    .spawn(move || audio_decode::run(ctx))?;
+                (Some((a.index, tx)), Some(dev.shared.clone()))
+            }
+            _ => (None, None),
+        };
 
         thread::Builder::new().name("rvp-demux".into()).spawn({
             let ctx = demux::DemuxCtx {
@@ -192,7 +270,9 @@ impl Player {
                 start_time,
                 cmd_rx,
                 video_tx,
+                audio: audio_route,
                 event_tx: event_tx.clone(),
+                initial_serial: base,
             };
             move || demux::run(ctx)
         })?;
@@ -208,16 +288,18 @@ impl Player {
                 frame_tx,
                 event_tx,
                 repaint,
+                initial_serial: base,
             };
             move || video_decode::run(ctx)
         })?;
 
         log::info!(
-            "opened {} ({} {}x{}, {:?}s)",
+            "opened {} ({} {}x{}, audio {:?}, {:?}s)",
             path.display(),
             info.codec,
             info.width,
             info.height,
+            info.audio_codec,
             info.duration
         );
 
@@ -235,8 +317,24 @@ impl Player {
             last_shown_pts: 0.0,
             last_shown_end: 0.0,
             eof: false,
-            error: None,
+            audio: audio_shared,
+            audio_eof: false,
+            error: audio_error,
         })
+    }
+
+    /// Volume as a linear slider value in `0.0..=1.5`, mapped to a cubic gain.
+    pub fn set_volume(&mut self, volume: f32, muted: bool) {
+        if let Some(a) = &self.audio {
+            let v = volume.clamp(0.0, 1.5);
+            a.lock().gain = if muted { 0.0 } else { v * v * v };
+        }
+    }
+
+    fn sync_audio_paused(&self) {
+        if let Some(a) = &self.audio {
+            a.lock().paused = self.state != PlayState::Playing;
+        }
     }
 
     pub fn info(&self) -> &MediaInfo {
@@ -272,10 +370,12 @@ impl Player {
             PlayState::Paused => {
                 self.state = PlayState::Playing;
                 self.clock.set_paused(false);
+                self.sync_audio_paused();
             }
             PlayState::Ended => {
                 self.state = PlayState::Playing;
                 self.clock.set_paused(false);
+                self.sync_audio_paused();
                 self.seek(0.0, true);
             }
         }
@@ -285,6 +385,7 @@ impl Player {
         if self.state == PlayState::Playing {
             self.state = PlayState::Paused;
             self.clock.set_paused(true);
+            self.sync_audio_paused();
         }
     }
 
@@ -309,9 +410,19 @@ impl Player {
         self.waiting_first_frame = true;
         self.seek_target = target;
         self.eof = false;
+        self.audio_eof = false;
         if self.state == PlayState::Ended {
             self.state = PlayState::Paused;
             self.clock.set_paused(true);
+        }
+        if let Some(a) = &self.audio {
+            let mut q = a.lock();
+            q.serial = serial;
+            q.chunks.clear();
+            q.queued_frames = 0;
+            q.clock = None;
+            q.hold = true;
+            q.paused = self.state != PlayState::Playing;
         }
         let _ = self.cmd_tx.send(DemuxCmd::Seek {
             target,
@@ -333,8 +444,18 @@ impl Player {
         while let Ok(ev) = self.event_rx.try_recv() {
             match ev {
                 PlayerEvent::Eof { serial: s } if s == serial => self.eof = true,
-                PlayerEvent::Eof { .. } => {}
+                PlayerEvent::AudioEof { serial: s } if s == serial => self.audio_eof = true,
+                PlayerEvent::Eof { .. } | PlayerEvent::AudioEof { .. } => {}
                 PlayerEvent::Error(e) => self.error = Some(e),
+            }
+        }
+
+        // Discipline the clock to what is actually audible.
+        if self.state == PlayState::Playing && !self.waiting_first_frame {
+            if let Some(t) = self.audio.as_ref().and_then(|a| a.audible_time(serial)) {
+                if (self.clock.time() - t).abs() > 0.008 {
+                    self.clock.set(t);
+                }
             }
         }
 
@@ -352,6 +473,10 @@ impl Player {
             if self.waiting_first_frame {
                 self.waiting_first_frame = false;
                 self.clock.set(f.pts);
+                // Video is ready: let audio start.
+                if let Some(a) = &self.audio {
+                    a.lock().hold = false;
+                }
             } else if f.pts > self.clock.time() {
                 break;
             }
@@ -370,6 +495,7 @@ impl Player {
             && self.frame_rx.is_empty()
             && !self.waiting_first_frame
             && self.clock.time() >= self.last_shown_end
+            && self.audio_drained()
         {
             self.state = PlayState::Ended;
             self.clock.set_paused(true);
@@ -377,6 +503,13 @@ impl Player {
         }
 
         show
+    }
+
+    fn audio_drained(&self) -> bool {
+        match &self.audio {
+            None => true,
+            Some(a) => self.audio_eof && a.lock().chunks.is_empty(),
+        }
     }
 
     /// How long the UI may sleep before the next call to [`Self::update`].
@@ -398,6 +531,13 @@ impl Drop for Player {
         // Invalidate in-flight work and let the threads observe disconnection.
         self.serial.fetch_add(1, Ordering::AcqRel);
         let _ = self.cmd_tx.send(DemuxCmd::Stop);
+        if let Some(a) = &self.audio {
+            let mut q = a.lock();
+            q.chunks.clear();
+            q.queued_frames = 0;
+            q.clock = None;
+            q.hold = true;
+        }
     }
 }
 
@@ -428,6 +568,104 @@ mod tests {
         Some(path)
     }
 
+    /// 10 s, 30 fps video + 44.1 kHz stereo AAC tone (exercises resampling to the device rate).
+    fn sample_av() -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("rvp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("sample_av_aac.mkv");
+        if !path.exists() {
+            let ok = Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=10"])
+                .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=10"])
+                .args(["-ac", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac"])
+                .arg(&path)
+                .status()
+                .ok()?
+                .success();
+            if !ok {
+                return None;
+            }
+        }
+        Some(path)
+    }
+
+    /// Runs the engine for `secs`, returning the max |video clock − audible audio| seen.
+    fn run_for(p: &mut Player, secs: f64) -> f64 {
+        let end = Instant::now() + Duration::from_secs_f64(secs);
+        let mut max_drift: f64 = 0.0;
+        while Instant::now() < end {
+            p.update();
+            let serial = p.serial.load(Ordering::Acquire);
+            if let Some(t) = p.audio.as_ref().and_then(|a| a.audible_time(serial)) {
+                max_drift = max_drift.max((p.clock.time() - t).abs());
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        max_drift
+    }
+
+    #[test]
+    fn audio_drives_clock_and_follows_seek() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        init().unwrap();
+        let Some(path) = sample_av() else {
+            eprintln!("ffmpeg CLI not available; skipping");
+            return;
+        };
+        let dev = match AudioDevice::open() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no audio output device; skipping ({e:#})");
+                return;
+            }
+        };
+        // Let the device get past its start-up silence (as the app does at launch).
+        std::thread::sleep(Duration::from_millis(400));
+        let mut p = Player::open(&path, egui::Context::default(), Some(&dev)).unwrap();
+        assert_eq!(p.info().audio_codec.as_deref(), Some("aac"));
+        next_frame(&mut p);
+
+        let drift = run_for(&mut p, 1.0);
+        assert!(drift < 0.02, "A/V drift {drift}");
+        let pos = p.position();
+        assert!((0.9..1.15).contains(&pos), "position after 1 s: {pos}");
+
+        // Seek: audio restarts at the target and keeps the clock in step.
+        p.seek(6.0, true);
+        next_frame(&mut p);
+        let drift = run_for(&mut p, 0.5);
+        assert!(drift < 0.02, "A/V drift after seek {drift}");
+        let audible = p.audio.as_ref().unwrap().audible_time(p.serial.load(Ordering::Acquire));
+        let audible = audible.expect("audio should be playing after seek");
+        assert!((6.3..6.8).contains(&audible), "audible after seek: {audible}");
+
+        // Pause freezes the position; audio stops reporting.
+        p.pause();
+        let frozen = p.position();
+        run_for(&mut p, 0.3);
+        assert!((p.position() - frozen).abs() < 1e-9);
+        assert!(p.audio.as_ref().unwrap().audible_time(p.serial.load(Ordering::Acquire)).is_none());
+
+        // Play to the end: Ended once both streams drain.
+        p.seek(9.0, true);
+        p.play();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while p.state() != PlayState::Ended {
+            p.update();
+            assert!(Instant::now() < deadline, "never reached Ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Switching files on the same device starts audio promptly and in sync.
+        drop(p);
+        let mut p = Player::open(&path, egui::Context::default(), Some(&dev)).unwrap();
+        next_frame(&mut p);
+        let drift = run_for(&mut p, 0.5);
+        assert!(drift < 0.02, "A/V drift after reopen {drift}");
+        let pos = p.position();
+        assert!((0.4..0.6).contains(&pos), "position 0.5 s after reopen: {pos}");
+    }
+
     fn next_frame(p: &mut Player) -> VideoFrame {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -446,7 +684,7 @@ mod tests {
             eprintln!("ffmpeg CLI not available; skipping");
             return;
         };
-        let mut p = Player::open(&path, egui::Context::default()).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), None).unwrap();
         assert_eq!((p.info().width, p.info().height), (320, 240));
         assert!((p.info().duration.unwrap() - 12.0).abs() < 0.1);
 

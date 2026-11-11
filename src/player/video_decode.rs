@@ -24,6 +24,7 @@ pub(super) struct VideoDecodeCtx {
     pub frame_tx: Sender<VideoFrame>,
     pub event_tx: Sender<PlayerEvent>,
     pub repaint: egui::Context,
+    pub initial_serial: u64,
 }
 
 struct State {
@@ -38,7 +39,7 @@ struct State {
 
 pub(super) fn run(mut c: VideoDecodeCtx) {
     let mut st = State {
-        serial: 0,
+        serial: c.initial_serial,
         drop_before: None,
         first_after_flush: true,
         last_pts: 0.0,

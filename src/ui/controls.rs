@@ -4,6 +4,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, RichText, Stroke, U
 use egui_phosphor::regular as icon;
 
 use super::seekbar::{SeekEvent, seek_bar};
+use super::volume::{VolumeActions, volume_control};
 use super::widgets::{format_time, icon_button, icon_button_ex};
 use crate::player::PlayState;
 use crate::theme::{color, panel_shadow, size};
@@ -13,6 +14,9 @@ pub struct ControlsModel {
     pub position: f64,
     pub duration: Option<f64>,
     pub fullscreen: bool,
+    pub volume: f32,
+    pub muted: bool,
+    pub has_audio: bool,
 }
 
 #[derive(Default)]
@@ -20,6 +24,7 @@ pub struct ControlsActions {
     pub toggle_pause: bool,
     pub seek: Option<SeekEvent>,
     pub toggle_fullscreen: bool,
+    pub volume: VolumeActions,
 }
 
 /// Rect the control bar occupies (used for hover detection by the caller).
@@ -73,6 +78,11 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> 
                 if icon_button(ui, fs_icon, tip).clicked() {
                     a.toggle_fullscreen = true;
                 }
+                if m.has_audio {
+                    ui.add_space(4.0);
+                    a.volume = volume_control(ui, m.volume, m.muted);
+                }
+                ui.add_space(6.0);
                 let total = m.duration.map(format_time).unwrap_or_else(|| "--:--".into());
                 ui.add(egui::Label::new(RichText::new(total).color(color::TEXT_DIM).monospace()).selectable(false));
 

@@ -12,11 +12,14 @@ pub(super) struct DemuxCtx {
     pub start_time: f64,
     pub cmd_rx: Receiver<DemuxCmd>,
     pub video_tx: Sender<PacketMsg>,
+    /// Audio stream index and its packet queue, if audio is being played.
+    pub audio: Option<(usize, Sender<PacketMsg>)>,
     pub event_tx: Sender<PlayerEvent>,
+    pub initial_serial: u64,
 }
 
 pub(super) fn run(mut d: DemuxCtx) {
-    let mut serial = 0u64;
+    let mut serial = d.initial_serial;
     let mut eof = false;
     let mut consecutive_errors = 0u32;
 
@@ -47,7 +50,7 @@ pub(super) fn run(mut d: DemuxCtx) {
             Ok(()) => consecutive_errors = 0,
             Err(ffmpeg::Error::Eof) => {
                 eof = true;
-                if d.video_tx.send(PacketMsg::Eof { serial }).is_err() {
+                if !broadcast(&d, || PacketMsg::Eof { serial }) {
                     return;
                 }
                 continue;
@@ -58,20 +61,25 @@ pub(super) fn run(mut d: DemuxCtx) {
                 if consecutive_errors > 100 {
                     let _ = d.event_tx.send(PlayerEvent::Error(format!("読み込みエラー: {e}")));
                     eof = true;
-                    let _ = d.video_tx.send(PacketMsg::Eof { serial });
+                    broadcast(&d, || PacketMsg::Eof { serial });
                 }
                 continue;
             }
         }
 
-        if packet.stream() != d.video_index {
+        let idx = packet.stream();
+        let tx = if idx == d.video_index {
+            d.video_tx.clone()
+        } else if let Some((_, tx)) = d.audio.as_ref().filter(|(a, _)| *a == idx) {
+            tx.clone()
+        } else {
             continue;
-        }
+        };
 
         // Block on the (bounded) packet queue, but stay responsive to commands.
         let msg = PacketMsg::Packet { packet, serial };
         select! {
-            send(d.video_tx, msg) -> res => if res.is_err() { return },
+            send(tx, msg) -> res => if res.is_err() { return },
             recv(d.cmd_rx) -> cmd => {
                 // The pending packet is dropped: every command invalidates it anyway.
                 let Ok(cmd) = cmd else { return };
@@ -123,12 +131,20 @@ fn handle_cmd(d: &mut DemuxCtx, cmd: DemuxCmd, serial: &mut u64) -> Flow {
     }
 
     *serial = serial_new;
-    let flush = PacketMsg::Flush {
+    if !broadcast(d, || PacketMsg::Flush {
         serial: serial_new,
         drop_before: exact.then_some(target),
-    };
-    if d.video_tx.send(flush).is_err() {
+    }) {
         return Flow::Stop;
     }
     Flow::Continue
+}
+
+/// Sends a control message to every active stream queue. `false` = player gone.
+fn broadcast(d: &DemuxCtx, msg: impl Fn() -> PacketMsg) -> bool {
+    let mut ok = d.video_tx.send(msg()).is_ok();
+    if let Some((_, tx)) = &d.audio {
+        ok &= tx.send(msg()).is_ok();
+    }
+    ok
 }
