@@ -7,7 +7,11 @@ use crossbeam_channel::{Receiver, Sender};
 use ffmpeg_next as ffmpeg;
 
 use super::frame::{FrameConverter, VideoFrame};
+use super::hwaccel;
 use super::{PacketMsg, PlayerEvent};
+
+/// Consecutive hardware errors before switching to software decoding.
+const HW_ERROR_LIMIT: u32 = 5;
 
 pub(super) struct VideoDecodeCtx {
     pub decoder: ffmpeg::decoder::Video,
@@ -24,6 +28,21 @@ pub(super) struct VideoDecodeCtx {
     pub event_tx: Sender<PlayerEvent>,
     pub repaint: egui::Context,
     pub initial_serial: u64,
+    /// Hardware decoding is configured on `decoder`.
+    pub hw: bool,
+    /// For rebuilding a software decoder if hardware decoding fails.
+    pub params: ffmpeg::codec::Parameters,
+}
+
+/// Opens a software decoder with frame threading.
+pub(super) fn open_sw_decoder(params: ffmpeg::codec::Parameters) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
+    let mut ctx = ffmpeg::codec::context::Context::from_parameters(params)?;
+    ctx.set_threading(ffmpeg::codec::threading::Config {
+        kind: ffmpeg::codec::threading::Type::Frame,
+        count: 0,
+        ..Default::default()
+    });
+    ctx.decoder().video()
 }
 
 struct State {
@@ -33,6 +52,8 @@ struct State {
     last_pts: f64,
     converter: FrameConverter,
     decoded: ffmpeg::frame::Video,
+    hw_errors: u32,
+    reported_hw: bool,
 }
 
 pub(super) fn run(mut c: VideoDecodeCtx) {
@@ -43,6 +64,8 @@ pub(super) fn run(mut c: VideoDecodeCtx) {
         last_pts: 0.0,
         converter: FrameConverter::default(),
         decoded: ffmpeg::frame::Video::empty(),
+        hw_errors: 0,
+        reported_hw: false,
     };
 
     while let Ok(msg) = c.pkt_rx.recv() {
@@ -53,6 +76,9 @@ pub(super) fn run(mut c: VideoDecodeCtx) {
                 }
                 if let Err(e) = c.decoder.send_packet(&packet) {
                     log::debug!("send_packet: {e}");
+                    if c.hw && hw_error(&mut c, &mut st) {
+                        return;
+                    }
                 }
                 if !drain(&mut c, &mut st) {
                     return;
@@ -89,6 +115,28 @@ pub(super) fn run(mut c: VideoDecodeCtx) {
 
 /// Pulls every available frame out of the decoder. Returns `false` when the
 /// player is gone and the thread should exit.
+/// Counts a hardware failure; past the limit, swaps in a software decoder and
+/// asks the player to re-seek. Returns `true` if the thread should exit.
+fn hw_error(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
+    st.hw_errors += 1;
+    if st.hw_errors < HW_ERROR_LIMIT {
+        return false;
+    }
+    log::warn!("hwdec: too many errors, switching to software decoding");
+    match open_sw_decoder(c.params.clone()) {
+        Ok(d) => {
+            c.decoder = d;
+            c.hw = false;
+            st.hw_errors = 0;
+            c.event_tx.send(PlayerEvent::HwFallback).is_err()
+        }
+        Err(e) => {
+            let _ = c.event_tx.send(PlayerEvent::Error(format!("デコーダを開けません: {e}")));
+            true
+        }
+    }
+}
+
 fn drain(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
     while c.decoder.receive_frame(&mut st.decoded).is_ok() {
         if c.serial.load(Ordering::Acquire) != st.serial {
@@ -109,7 +157,27 @@ fn drain(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
             st.drop_before = None;
         }
 
-        let decoded = std::mem::replace(&mut st.decoded, ffmpeg::frame::Video::empty());
+        let mut decoded = std::mem::replace(&mut st.decoded, ffmpeg::frame::Video::empty());
+        let on_gpu = hwaccel::is_hw_frame(&decoded);
+        if !st.reported_hw {
+            st.reported_hw = true;
+            let _ = c.event_tx.send(PlayerEvent::HwActive(on_gpu));
+        }
+        if on_gpu {
+            match hwaccel::download(&decoded) {
+                Ok(sw) => {
+                    decoded = sw;
+                    st.hw_errors = 0;
+                }
+                Err(e) => {
+                    log::warn!("hwdec download failed: {e}");
+                    if hw_error(c, st) {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+        }
         let Some(frame) = st.converter.make(decoded, st.serial, pts, c.frame_duration, c.stream_sar) else {
             continue;
         };

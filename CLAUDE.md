@@ -30,6 +30,11 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   call `avsubtitle_free` — ffmpeg-next doesn't) and sent as `PlayerEvent::SubtitleCue`. Track switches go through
   `DemuxCmd::SelectAudio/SelectSubtitle` followed by an exact re-seek (`Player::reseek`); audio switch ships a new
   decoder to the audio thread via `PacketMsg::NewAudioDecoder`. Bitmap subs (PGS/DVD) are listed as unsupported.
+- HW decode: `player/hwaccel.rs` — `HwDec` (config `hwdec = auto|off|cuda|vaapi`; auto = CUDA then VAAPI). Devices
+  are cached per process; VAAPI probes every `/dev/dri/renderD*` (this machine: renderD128 = NVIDIA without VA driver,
+  renderD129 = AMD iGPU with radeonsi). `get_format` falls back to software when the hw format isn't offered.
+  Frames are downloaded (`av_hwframe_transfer_data`) to NV12/P010 → semi-planar path. Repeated hw errors make the
+  decode thread swap in a SW decoder and emit `PlayerEvent::HwFallback` (player re-seeks). Vulkan hwaccel hangs here.
 - Speed: `Player::set_speed` scales the system clock and sets `AudioQueue::speed`; the audio decoder runs
   `player/tempo.rs` (libavfilter `atempo`, chained for < 0.5×) only while speed ≠ 1. Each `AudioChunk` carries its
   speed, so one device sample = `speed / rate` media seconds. `atempo` output pts are in the *output* domain —

@@ -11,7 +11,7 @@ use egui::{
 use egui_phosphor::regular as icon;
 
 use crate::config::{Config, ResumeStore};
-use crate::player::{AudioDevice, GPU_16BIT, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
+use crate::player::{AudioDevice, GPU_16BIT, HwDec, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
 use crate::playlist::{Playlist, Repeat, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
@@ -177,7 +177,7 @@ impl RvpApp {
         self.current = None;
         self.current_path = None;
         self.end_handled = false;
-        match Player::open(&path, ctx.clone(), self.audio.as_ref()) {
+        match Player::open(&path, ctx.clone(), self.audio.as_ref(), self.config.hwdec) {
             Ok(mut p) => {
                 p.set_volume(self.config.volume, self.config.muted);
                 p.set_speed(self.speed);
@@ -439,6 +439,37 @@ impl RvpApp {
         self.show_osd(ctx, osd, false);
     }
 
+    /// Ctrl+H: hardware decoding auto ⇄ off; reopens the current file in place.
+    fn toggle_hwdec(&mut self, ctx: &egui::Context) {
+        self.config.hwdec = if self.config.hwdec == HwDec::Off { HwDec::Auto } else { HwDec::Off };
+        self.mark_config_dirty(ctx);
+        let reopen = self.player.as_ref().zip(self.current_path.clone()).map(|(p, path)| (path, p.position(), p.state()));
+        if let Some((path, pos, state)) = reopen {
+            self.open(ctx, path);
+            if let Some(p) = self.player.as_mut() {
+                p.seek(pos, true);
+                if state == PlayState::Paused {
+                    p.pause();
+                }
+            }
+        }
+        let mode = if self.config.hwdec == HwDec::Off { "オフ" } else { "自動" };
+        self.show_osd(ctx, format!("ハードウェアデコード: {mode}"), false);
+    }
+
+    /// `I`: codec / resolution / decoder summary.
+    fn show_media_info(&mut self, ctx: &egui::Context) {
+        let Some(p) = self.player.as_ref() else { return };
+        let i = p.info();
+        let decoder = match p.hwdec() {
+            Some(hw) => format!("HW ({hw})"),
+            None => "ソフトウェア".to_owned(),
+        };
+        let audio = i.audio_codec.clone().unwrap_or_else(|| "なし".into());
+        let text = format!("映像: {} {}×{} · デコード: {decoder}\n音声: {audio}", i.codec, i.width, i.height);
+        self.show_osd(ctx, text, false);
+    }
+
     /// Next subtitle (`S`) or audio (`A`) track, wrapping around.
     fn cycle_track(&mut self, ctx: &egui::Context, audio: bool) {
         let Some(p) = self.player.as_ref() else { return };
@@ -521,6 +552,12 @@ impl RvpApp {
 
         if key(Modifiers::NONE, Key::O) {
             self.open_dialog(ctx, DialogKind::Open);
+        }
+        if key(Modifiers::CTRL, Key::H) {
+            self.toggle_hwdec(ctx);
+        }
+        if key(Modifiers::NONE, Key::I) {
+            self.show_media_info(ctx);
         }
         if key(Modifiers::NONE, Key::V) {
             self.handle_tracks_action(ctx, TracksAction::ToggleVisible);

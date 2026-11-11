@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::player::HwDec;
 use crate::playlist::Repeat;
 
 fn dirs() -> Option<directories::ProjectDirs> {
@@ -53,6 +54,8 @@ pub struct Config {
     /// Seek step for ←/→ and Shift+←/→ in seconds.
     pub seek_small: f64,
     pub seek_large: f64,
+    /// Hardware decoding: auto / off / cuda / vaapi.
+    pub hwdec: HwDec,
 }
 
 impl Default for Config {
@@ -66,6 +69,7 @@ impl Default for Config {
             resume: true,
             seek_small: 5.0,
             seek_large: 60.0,
+            hwdec: HwDec::Auto,
         }
     }
 }

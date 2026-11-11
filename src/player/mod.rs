@@ -9,6 +9,7 @@ mod audio_out;
 mod clock;
 mod demux;
 mod frame;
+mod hwaccel;
 mod subtitle;
 mod tempo;
 mod video_decode;
@@ -26,6 +27,7 @@ use ffmpeg_next as ffmpeg;
 
 pub use audio_out::AudioDevice;
 pub use frame::{GPU_16BIT, Matrix, PlaneLayout, VideoFrame};
+pub use hwaccel::HwDec;
 pub use subtitle::{SUBTITLE_EXTENSIONS, is_subtitle_file};
 use subtitle::{Cue, SubtitleTrack};
 use audio_out::AudioShared;
@@ -157,6 +159,10 @@ pub(crate) enum PlayerEvent {
     Eof { serial: u64 },
     AudioEof { serial: u64 },
     SubtitleCue { stream: usize, cue: Cue },
+    /// First decoded frame was on the GPU (`true`) or in system memory.
+    HwActive(bool),
+    /// Hardware decoding failed and the decoder was replaced by a software one.
+    HwFallback,
     Error(String),
 }
 
@@ -193,6 +199,9 @@ pub struct Player {
     sub_visible: bool,
     /// Positive = subtitles appear later.
     sub_delay: f64,
+    /// Hardware device configured for decoding, and whether frames actually come from it.
+    hw_device: Option<String>,
+    hw_active: bool,
     error: Option<String>,
 }
 
@@ -220,7 +229,7 @@ fn setup_audio(input: &ffmpeg::format::context::Input) -> anyhow::Result<Option<
 
 impl Player {
     /// Opens `path`. Audio plays through `audio` when given (and the file has audio).
-    pub fn open(path: &Path, repaint: egui::Context, audio: Option<&AudioDevice>) -> anyhow::Result<Self> {
+    pub fn open(path: &Path, repaint: egui::Context, audio: Option<&AudioDevice>, hwdec: HwDec) -> anyhow::Result<Self> {
         let input = ffmpeg::format::input(path)
             .with_context(|| format!("開けませんでした: {}", path.display()))?;
 
@@ -243,16 +252,21 @@ impl Player {
         let stream_sar = (stream_sar.num > 0 && stream_sar.den > 0)
             .then(|| f64::from(stream_sar.num) / f64::from(stream_sar.den));
 
-        let mut codec_ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-        codec_ctx.set_threading(ffmpeg::codec::threading::Config {
-            kind: ffmpeg::codec::threading::Type::Frame,
-            count: 0,
-            ..Default::default()
-        });
-        let decoder = codec_ctx
-            .decoder()
-            .video()
-            .context("映像デコーダを開けませんでした")?;
+        let params = stream.parameters();
+        let mut codec_ctx = ffmpeg::codec::context::Context::from_parameters(params.clone())?;
+        let hw_device = hwaccel::attach(&mut codec_ctx, hwdec);
+        let decoder = match &hw_device {
+            // Hardware: a single decode thread is enough (and keeps the surface pool small).
+            Some(name) => match codec_ctx.decoder().video() {
+                Ok(d) => Ok(d),
+                Err(e) => {
+                    log::warn!("hwdec {name}: open failed ({e}), using software");
+                    video_decode::open_sw_decoder(params.clone())
+                }
+            },
+            None => video_decode::open_sw_decoder(params.clone()),
+        }
+        .context("映像デコーダを開けませんでした")?;
 
         let (audio_setup, audio_error) = match audio.map(|_| setup_audio(&input)).transpose() {
             Ok(a) => (a.flatten(), None),
@@ -401,6 +415,8 @@ impl Player {
                 event_tx,
                 repaint,
                 initial_serial: base,
+                hw: hw_device.is_some(),
+                params,
             };
             move || video_decode::run(ctx)
         })?;
@@ -438,6 +454,8 @@ impl Player {
             sub_sel,
             sub_visible: true,
             sub_delay: 0.0,
+            hw_device,
+            hw_active: false,
             error: audio_error,
         })
     }
@@ -448,6 +466,11 @@ impl Player {
             let v = volume.clamp(0.0, 1.5);
             a.lock().gain = if muted { 0.0 } else { v * v * v };
         }
+    }
+
+    /// Name of the hardware decoder in use (`None` = software).
+    pub fn hwdec(&self) -> Option<&str> {
+        self.hw_active.then_some(self.hw_device.as_deref()).flatten()
     }
 
     // ---- Tracks & subtitles ----------------------------------------------------
@@ -676,6 +699,15 @@ impl Player {
                 PlayerEvent::Eof { .. } | PlayerEvent::AudioEof { .. } => {}
                 PlayerEvent::Error(e) => self.error = Some(e),
                 PlayerEvent::SubtitleCue { stream, cue } => self.sub_embedded.entry(stream).or_default().insert(cue),
+                PlayerEvent::HwActive(on) => {
+                    self.hw_active = on && self.hw_device.is_some();
+                    log::info!("video decoding: {}", self.hwdec().unwrap_or("software"));
+                }
+                PlayerEvent::HwFallback => {
+                    self.hw_active = false;
+                    self.error = Some("ハードウェアデコードに失敗したため、ソフトウェアに切り替えました".into());
+                    self.reseek();
+                }
             }
         }
 
@@ -852,7 +884,7 @@ mod tests {
         };
         // Let the device get past its start-up silence (as the app does at launch).
         std::thread::sleep(Duration::from_millis(400));
-        let mut p = Player::open(&path, egui::Context::default(), Some(&dev)).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), Some(&dev), HwDec::Off).unwrap();
         assert_eq!(p.info().audio_codec.as_deref(), Some("aac"));
         next_frame(&mut p);
 
@@ -906,7 +938,7 @@ mod tests {
 
         // Switching files on the same device starts audio promptly and in sync.
         drop(p);
-        let mut p = Player::open(&path, egui::Context::default(), Some(&dev)).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), Some(&dev), HwDec::Off).unwrap();
         next_frame(&mut p);
         let drift = run_for(&mut p, 0.5);
         assert!(drift < 0.02, "A/V drift after reopen {drift}");
@@ -966,7 +998,7 @@ mod tests {
             return;
         };
         let dev = AudioDevice::open().ok();
-        let mut p = Player::open(&path, egui::Context::default(), dev.as_ref()).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), dev.as_ref(), HwDec::Off).unwrap();
 
         let info = p.info().clone();
         assert_eq!(info.audio_tracks.len(), 2);
@@ -1015,12 +1047,52 @@ mod tests {
         drop(p);
         let ext = dir.join("tracks.srt");
         std::fs::write(&ext, "1\n00:00:00,500 --> 00:00:02,000\n外部字幕\n").unwrap();
-        let mut p = Player::open(&path, egui::Context::default(), None).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), None, HwDec::Off).unwrap();
         assert_eq!(p.subtitle_selection(), SubSel::External(0));
         next_frame(&mut p);
         play_until(&mut p, 0.8);
         assert_eq!(p.subtitle_text().as_deref(), Some("外部字幕"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Same frame decoded in hardware and software must match closely.
+    #[test]
+    fn hardware_decode_matches_software() {
+        init().unwrap();
+        let Some(path) = sample_video() else { return };
+        let grab = |mode: HwDec| {
+            let mut p = Player::open(&path, egui::Context::default(), None, mode).unwrap();
+            p.pause();
+            p.seek(3.0, true);
+            let f = next_frame(&mut p);
+            (p.hwdec().map(str::to_owned), f)
+        };
+        let (none, sw) = grab(HwDec::Off);
+        assert!(none.is_none());
+        let mut tested = 0;
+        for mode in [HwDec::Cuda, HwDec::Vaapi] {
+            let (name, hw) = grab(mode);
+            let Some(name) = name else {
+                eprintln!("{mode:?} unavailable; skipping");
+                continue;
+            };
+            tested += 1;
+            assert_eq!(hw.layout, PlaneLayout::SemiPlanar, "{name}: downloaded as NV12");
+            assert!((hw.pts - sw.pts).abs() < 1e-6, "{name}: pts {} vs {}", hw.pts, sw.pts);
+            assert_eq!((hw.width, hw.height), (sw.width, sw.height));
+            let (hy, hs) = hw.plane_data(0);
+            let (sy, ss) = sw.plane_data(0);
+            let mut diff = 0u64;
+            for row in 0..sw.height {
+                for x in 0..sw.width {
+                    diff += u64::from(hy[row * hs + x].abs_diff(sy[row * ss + x]));
+                }
+            }
+            let mean = diff as f64 / (sw.width * sw.height) as f64;
+            assert!(mean < 1.0, "{name}: mean luma difference {mean}");
+            eprintln!("{name}: mean luma diff {mean:.3}");
+        }
+        eprintln!("hardware decoders tested: {tested}");
     }
 
     fn next_frame(p: &mut Player) -> VideoFrame {
@@ -1041,7 +1113,7 @@ mod tests {
             eprintln!("ffmpeg CLI not available; skipping");
             return;
         };
-        let mut p = Player::open(&path, egui::Context::default(), None).unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), None, HwDec::Off).unwrap();
         assert_eq!((p.info().width, p.info().height), (320, 240));
         assert!((p.info().duration.unwrap() - 12.0).abs() < 0.1);
 
