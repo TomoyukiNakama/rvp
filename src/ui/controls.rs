@@ -17,6 +17,9 @@ pub struct ControlsModel {
     pub volume: f32,
     pub muted: bool,
     pub has_audio: bool,
+    pub has_prev: bool,
+    pub has_next: bool,
+    pub playlist_open: bool,
 }
 
 #[derive(Default)]
@@ -25,6 +28,9 @@ pub struct ControlsActions {
     pub seek: Option<SeekEvent>,
     pub toggle_fullscreen: bool,
     pub volume: VolumeActions,
+    pub prev: bool,
+    pub next: bool,
+    pub toggle_playlist: bool,
 }
 
 /// Rect the control bar occupies (used for hover detection by the caller).
@@ -62,9 +68,20 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> 
                 PlayState::Paused => (icon::PLAY, "再生 (Space)"),
                 PlayState::Ended => (icon::ARROW_COUNTER_CLOCKWISE, "最初から再生 (Space)"),
             };
+            ui.add_enabled_ui(m.has_prev, |ui| {
+                if icon_button(ui, icon::SKIP_BACK, "前へ (B)").clicked() {
+                    a.prev = true;
+                }
+            });
             if icon_button_ex(ui, play_icon, tip, size::ICON_SIZE + 2.0, None).clicked() {
                 a.toggle_pause = true;
             }
+            ui.add_enabled_ui(m.has_next, |ui| {
+                if icon_button(ui, icon::SKIP_FORWARD, "次へ (N)").clicked() {
+                    a.next = true;
+                }
+            });
+            ui.add_space(2.0);
 
             let time = RichText::new(format_time(m.position)).color(color::TEXT).monospace();
             ui.add(egui::Label::new(time).selectable(false));
@@ -77,6 +94,23 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> 
                 };
                 if icon_button(ui, fs_icon, tip).clicked() {
                     a.toggle_fullscreen = true;
+                }
+                let pl = icon_button_ex(
+                    ui,
+                    icon::QUEUE,
+                    "プレイリスト (P)",
+                    size::ICON_SIZE,
+                    m.playlist_open.then_some(color::SURFACE_ACTIVE),
+                );
+                if m.playlist_open {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(pl.rect.center_bottom() - vec2(0.0, 3.0), vec2(12.0, 2.0)),
+                        1,
+                        color::ACCENT,
+                    );
+                }
+                if pl.clicked() {
+                    a.toggle_playlist = true;
                 }
                 if m.has_audio {
                     ui.add_space(4.0);

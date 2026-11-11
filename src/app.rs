@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -10,18 +10,23 @@ use egui::{
 };
 use egui_phosphor::regular as icon;
 
+use crate::config::{Config, ResumeStore};
 use crate::player::{AudioDevice, GPU_16BIT, PlayState, Player, VideoFrame};
+use crate::playlist::{Playlist, Repeat, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
+use crate::ui::playlist_panel::{self, PlaylistAction, PlaylistModel};
 use crate::ui::seekbar::SeekEvent;
 use crate::ui::volume::MAX_VOLUME;
-use crate::ui::widgets::icon_font;
+use crate::ui::widgets::{format_time, icon_font};
 use crate::ui::window;
 
-const SEEK_SMALL: f64 = 5.0;
-const SEEK_LARGE: f64 = 60.0;
 const VOLUME_STEP: f32 = 0.05;
+/// "Previous" restarts the current file if we're further in than this.
+const PREV_RESTART_AFTER: f64 = 3.0;
+const RESUME_SAVE_INTERVAL: f64 = 30.0;
+const CONFIG_SAVE_DELAY: f64 = 1.0;
 
 struct Osd {
     text: String,
@@ -29,19 +34,34 @@ struct Osd {
     error: bool,
 }
 
+/// Result of the background file dialog.
+struct DialogResult {
+    paths: Vec<PathBuf>,
+    append: bool,
+}
+
 pub struct RvpApp {
     player: Option<Player>,
     audio: Option<AudioDevice>,
     /// Frame currently on screen (uploaded to the GPU by the paint callback).
     current: Option<Arc<VideoFrame>>,
+    /// File the current player was opened from.
+    current_path: Option<PathBuf>,
+    /// The current player's end has been handled (auto-advance done).
+    end_handled: bool,
+    playlist: Playlist,
+    show_playlist: bool,
+    config: Config,
+    /// Time of the last unsaved config change.
+    config_dirty_since: Option<f64>,
+    resume: ResumeStore,
+    last_resume_save: f64,
     video_aspect: f32,
     last_activity: f64,
     osd: Option<Osd>,
-    open_tx: Sender<PathBuf>,
-    open_rx: Receiver<PathBuf>,
+    dialog_tx: Sender<Option<DialogResult>>,
+    dialog_rx: Receiver<Option<DialogResult>>,
     dialog_open: bool,
-    volume: f32,
-    muted: bool,
     wheel_accum: f32,
     debug_shot: Option<crate::debug_shot::DebugShot>,
 }
@@ -73,38 +93,80 @@ impl RvpApp {
             }
         };
 
-        let (open_tx, open_rx) = unbounded();
+        let config = Config::load();
+        let mut playlist = Playlist::default();
+        playlist.repeat = config.repeat;
+        playlist.set_shuffle(config.shuffle);
+
+        let (dialog_tx, dialog_rx) = unbounded();
         let mut app = Self {
             player: None,
             audio,
             current: None,
+            current_path: None,
+            end_handled: false,
+            playlist,
+            // Debug aid for screenshots (see debug_shot.rs).
+            show_playlist: std::env::var_os("RVP_DEBUG_PLAYLIST").is_some(),
+            config,
+            config_dirty_since: None,
+            resume: ResumeStore::load(),
+            last_resume_save: 0.0,
             video_aspect: 16.0 / 9.0,
             last_activity: 0.0,
             osd: None,
-            open_tx,
-            open_rx,
+            dialog_tx,
+            dialog_rx,
             dialog_open: false,
-            volume: 1.0,
-            muted: false,
             wheel_accum: 0.0,
             debug_shot: crate::debug_shot::DebugShot::from_env(),
         };
         if let Some(e) = audio_error {
             app.show_osd(&cc.egui_ctx, e, true);
         }
-        // Playlist support comes later; for now open the first argument.
-        if let Some(first) = files.into_iter().next() {
-            app.open(&cc.egui_ctx, first);
+        if !files.is_empty() {
+            app.open_paths(&cc.egui_ctx, files, false);
         }
         app
     }
 
+    // ---- Opening & playlist ---------------------------------------------------
+
+    /// Replaces (or appends to) the playlist and starts playing if needed.
+    fn open_paths(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>, append: bool) {
+        if append {
+            let n = self.playlist.append(paths);
+            self.show_osd(ctx, format!("{n} 件をプレイリストに追加"), false);
+            if self.player.is_none() {
+                self.play_current(ctx);
+            }
+            return;
+        }
+        let single = paths.len() == 1;
+        self.playlist.set(paths, single && self.config.playlist_from_folder);
+        if self.playlist.len() == 0 {
+            self.show_osd(ctx, "再生できる動画が見つかりません".into(), true);
+            return;
+        }
+        self.play_current(ctx);
+    }
+
+    fn play_current(&mut self, ctx: &egui::Context) {
+        if let Some(path) = self.playlist.current().map(Path::to_path_buf) {
+            self.open(ctx, path);
+        }
+    }
+
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.remember_position();
         // Drop the old player first so its threads stop before new ones start.
         self.player = None;
+        self.current = None;
+        self.current_path = None;
+        self.end_handled = false;
         match Player::open(&path, ctx.clone(), self.audio.as_ref()) {
             Ok(mut p) => {
-                p.set_volume(self.volume, self.muted);
+                p.set_volume(self.config.volume, self.config.muted);
                 if let Some(e) = p.take_error() {
                     self.show_osd(ctx, e, true);
                 }
@@ -115,8 +177,17 @@ impl RvpApp {
                     16.0 / 9.0
                 };
                 ctx.send_viewport_cmd(ViewportCommand::Title(format!("{} — rvp", info.title)));
+
+                let resumed = self.config.resume.then(|| self.resume.get(&path)).flatten();
+                if let Some(pos) = resumed {
+                    p.seek(pos, true);
+                    self.show_osd(ctx, format!("前回の位置から再開 ({})", format_time(pos)), false);
+                } else if self.playlist.len() > 1 {
+                    let n = self.playlist.current_index().map_or(0, |i| i + 1);
+                    self.show_osd(ctx, format!("{n}/{}  {}", self.playlist.len(), info.title), false);
+                }
                 self.player = Some(p);
-                self.current = None;
+                self.current_path = Some(path);
             }
             Err(e) => {
                 log::error!("{e:#}");
@@ -125,50 +196,172 @@ impl RvpApp {
         }
     }
 
+    /// Stores the current file's position for resuming later.
+    fn remember_position(&mut self) {
+        let (Some(p), Some(path)) = (&self.player, &self.current_path) else { return };
+        if p.state() == PlayState::Ended {
+            self.resume.forget(path);
+        } else {
+            self.resume.record(path, p.position(), p.info().duration);
+        }
+    }
+
+    fn next(&mut self, ctx: &egui::Context) {
+        if self.playlist.next().is_some() {
+            self.play_current(ctx);
+        } else {
+            self.show_osd(ctx, "プレイリストの最後です".into(), false);
+        }
+    }
+
+    fn prev(&mut self, ctx: &egui::Context) {
+        if let Some(p) = self.player.as_mut()
+            && p.position() > PREV_RESTART_AFTER
+        {
+            p.seek(0.0, true);
+            return;
+        }
+        if self.playlist.prev().is_some() {
+            self.play_current(ctx);
+        } else if let Some(p) = self.player.as_mut() {
+            p.seek(0.0, true);
+        }
+    }
+
+    /// Auto-advance when the current file finishes.
+    fn handle_end(&mut self, ctx: &egui::Context) {
+        let ended = self.player.as_ref().is_some_and(|p| p.state() == PlayState::Ended);
+        if !ended {
+            self.end_handled = false;
+            return;
+        }
+        if self.end_handled {
+            return;
+        }
+        self.end_handled = true;
+        if let Some(path) = &self.current_path {
+            self.resume.forget(path);
+        }
+        if self.playlist.repeat == Repeat::One {
+            if let Some(p) = self.player.as_mut() {
+                p.play(); // restarts from the beginning
+            }
+        } else if self.playlist.on_finished().is_some() {
+            self.play_current(ctx);
+        }
+    }
+
+    fn handle_playlist_action(&mut self, ctx: &egui::Context, action: PlaylistAction) {
+        match action {
+            PlaylistAction::Play(i) => {
+                if self.playlist.select(i).is_some() {
+                    self.play_current(ctx);
+                }
+            }
+            PlaylistAction::Remove(i) => {
+                let was_current = self.playlist.current_index() == Some(i);
+                self.playlist.remove(i);
+                if was_current {
+                    if self.playlist.len() == 0 {
+                        self.remember_position();
+                        self.player = None;
+                        self.current = None;
+                        self.current_path = None;
+                        ctx.send_viewport_cmd(ViewportCommand::Title("rvp".into()));
+                    } else {
+                        self.play_current(ctx);
+                    }
+                }
+            }
+            PlaylistAction::Move { from, to } => self.playlist.move_item(from, to),
+            PlaylistAction::CycleRepeat => {
+                self.playlist.repeat = self.playlist.repeat.cycle();
+                self.config.repeat = self.playlist.repeat;
+                self.mark_config_dirty(ctx);
+                let text = match self.playlist.repeat {
+                    Repeat::Off => "リピート: オフ",
+                    Repeat::All => "リピート: 全体",
+                    Repeat::One => "リピート: 1 本",
+                };
+                self.show_osd(ctx, text.into(), false);
+            }
+            PlaylistAction::ToggleShuffle => {
+                let on = !self.playlist.shuffle();
+                self.playlist.set_shuffle(on);
+                self.config.shuffle = on;
+                self.mark_config_dirty(ctx);
+                self.show_osd(ctx, if on { "シャッフル: オン" } else { "シャッフル: オフ" }.into(), false);
+            }
+            PlaylistAction::Add => self.open_dialog(ctx, true),
+            PlaylistAction::Close => self.show_playlist = false,
+        }
+    }
+
+    // ---- Misc helpers ---------------------------------------------------------
+
     fn show_osd(&mut self, ctx: &egui::Context, text: String, error: bool) {
         let now = ctx.input(|i| i.time);
         self.osd = Some(Osd {
             text,
-            until: now + if error { 5.0 } else { 1.2 },
+            until: now + if error { 5.0 } else { 1.5 },
             error,
         });
     }
 
-    fn open_dialog(&mut self, ctx: &egui::Context) {
+    fn mark_config_dirty(&mut self, ctx: &egui::Context) {
+        if self.config_dirty_since.is_none() {
+            self.config_dirty_since = Some(ctx.input(|i| i.time));
+        }
+        ctx.request_repaint_after(Duration::from_secs_f64(CONFIG_SAVE_DELAY));
+    }
+
+    /// Debounced config save + periodic resume save.
+    fn persist(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if let Some(since) = self.config_dirty_since
+            && now - since >= CONFIG_SAVE_DELAY
+        {
+            self.config.save();
+            self.config_dirty_since = None;
+        }
+        if now - self.last_resume_save >= RESUME_SAVE_INTERVAL {
+            self.last_resume_save = now;
+            if self.player.as_ref().is_some_and(|p| p.state() == PlayState::Playing) {
+                self.remember_position();
+            }
+            self.resume.save();
+        }
+    }
+
+    fn open_dialog(&mut self, ctx: &egui::Context, append: bool) {
         if self.dialog_open {
             return;
         }
         self.dialog_open = true;
-        let tx = self.open_tx.clone();
+        let tx = self.dialog_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
-                .set_title("動画を開く")
-                .add_filter(
-                    "動画",
-                    &["mp4", "mkv", "webm", "mov", "avi", "m4v", "ts", "m2ts", "flv", "wmv", "mpg", "mpeg", "ogv"],
-                )
+                .set_title(if append { "プレイリストに追加" } else { "動画を開く" })
+                .add_filter("動画", VIDEO_EXTENSIONS)
                 .add_filter("すべてのファイル", &["*"])
-                .pick_file();
-            if let Some(p) = picked {
-                let _ = tx.send(p);
-            }
-            // Signal completion (an empty path means "cancelled").
-            let _ = tx.send(PathBuf::new());
+                .pick_files();
+            let _ = tx.send(picked.map(|paths| DialogResult { paths, append }));
             ctx.request_repaint();
         });
     }
 
     fn set_volume(&mut self, ctx: &egui::Context, volume: f32, muted: bool) {
-        self.volume = (volume * 100.0).round().clamp(0.0, MAX_VOLUME * 100.0) / 100.0;
-        self.muted = muted;
+        self.config.volume = (volume * 100.0).round().clamp(0.0, MAX_VOLUME * 100.0) / 100.0;
+        self.config.muted = muted;
         if let Some(p) = self.player.as_mut() {
-            p.set_volume(self.volume, self.muted);
+            p.set_volume(self.config.volume, self.config.muted);
         }
+        self.mark_config_dirty(ctx);
         let text = if muted {
             "ミュート".to_owned()
         } else {
-            format!("音量 {:.0}%", self.volume * 100.0)
+            format!("音量 {:.0}%", self.config.volume * 100.0)
         };
         self.show_osd(ctx, text, false);
     }
@@ -180,18 +373,19 @@ impl RvpApp {
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         // Files from the dialog thread.
-        while let Ok(p) = self.open_rx.try_recv() {
-            if p.as_os_str().is_empty() {
-                self.dialog_open = false;
-            } else {
-                self.open(ctx, p);
+        while let Ok(res) = self.dialog_rx.try_recv() {
+            self.dialog_open = false;
+            if let Some(r) = res
+                && !r.paths.is_empty()
+            {
+                self.open_paths(ctx, r.paths, r.append);
             }
         }
 
-        // Drag & drop.
+        // Drag & drop: replaces the playlist, or appends while the panel is open.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if let Some(first) = dropped.into_iter().next() {
-            self.open(ctx, first);
+        if !dropped.is_empty() {
+            self.open_paths(ctx, dropped, self.show_playlist);
         }
 
         let (now, moved) = ctx.input(|i| (i.time, i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_down()));
@@ -202,7 +396,7 @@ impl RvpApp {
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
 
         if key(Modifiers::NONE, Key::O) {
-            self.open_dialog(ctx);
+            self.open_dialog(ctx, false);
         }
         if key(Modifiers::NONE, Key::Q) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -213,17 +407,27 @@ impl RvpApp {
         if key(Modifiers::NONE, Key::Escape) && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
         }
+        if key(Modifiers::NONE, Key::P) {
+            self.show_playlist = !self.show_playlist;
+        }
+        if key(Modifiers::NONE, Key::N) {
+            self.next(ctx);
+        }
+        if key(Modifiers::NONE, Key::B) {
+            self.prev(ctx);
+        }
 
         if key(Modifiers::NONE, Key::ArrowUp) {
-            self.set_volume(ctx, self.volume + VOLUME_STEP, false);
+            self.set_volume(ctx, self.config.volume + VOLUME_STEP, false);
         }
         if key(Modifiers::NONE, Key::ArrowDown) {
-            self.set_volume(ctx, self.volume - VOLUME_STEP, false);
+            self.set_volume(ctx, self.config.volume - VOLUME_STEP, false);
         }
         if key(Modifiers::NONE, Key::M) {
-            self.set_volume(ctx, self.volume, !self.muted);
+            self.set_volume(ctx, self.config.volume, !self.config.muted);
         }
 
+        let (small, large) = (self.config.seek_small, self.config.seek_large);
         let mut osd = None;
         if let Some(p) = self.player.as_mut() {
             if key(Modifiers::NONE, Key::Space) {
@@ -231,10 +435,10 @@ impl RvpApp {
                 osd = Some(if p.state() == PlayState::Playing { "再生" } else { "一時停止" }.to_owned());
             }
             for (m, k, d) in [
-                (Modifiers::SHIFT, Key::ArrowLeft, -SEEK_LARGE),
-                (Modifiers::SHIFT, Key::ArrowRight, SEEK_LARGE),
-                (Modifiers::NONE, Key::ArrowLeft, -SEEK_SMALL),
-                (Modifiers::NONE, Key::ArrowRight, SEEK_SMALL),
+                (Modifiers::SHIFT, Key::ArrowLeft, -large),
+                (Modifiers::SHIFT, Key::ArrowRight, large),
+                (Modifiers::NONE, Key::ArrowLeft, -small),
+                (Modifiers::NONE, Key::ArrowRight, small),
             ] {
                 if key(m, k) {
                     p.seek_relative(d);
@@ -259,7 +463,10 @@ impl RvpApp {
         if let Some(d) = self.player.as_ref().and_then(Player::next_wakeup) {
             ctx.request_repaint_after(d);
         }
+        self.handle_end(ctx);
     }
+
+    // ---- Painting -------------------------------------------------------------
 
     fn paint_empty_state(&mut self, ui: &mut egui::Ui, window: Rect) {
         let center = window.center();
@@ -296,7 +503,7 @@ impl RvpApp {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         if resp.clicked() {
-            self.open_dialog(ui.ctx());
+            self.open_dialog(ui.ctx(), false);
         }
         p.text(
             center + vec2(0.0, 112.0),
@@ -332,6 +539,30 @@ impl RvpApp {
         p.add(egui::epaint::RectShape::filled(rect, CornerRadius::same(size::PANEL_RADIUS), fill));
         p.galley(rect.min + pad, galley, text_color.gamma_multiply(alpha));
     }
+
+    fn handle_wheel(&mut self, ctx: &egui::Context) {
+        // Mouse notches arrive in lines; touchpads in points (accumulate).
+        let lines: f32 = ctx.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
+                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Point => delta.y / 50.0,
+                        egui::MouseWheelUnit::Page => delta.y * 3.0,
+                    }),
+                    _ => None,
+                })
+                .sum()
+        });
+        self.wheel_accum += lines;
+        let steps = self.wheel_accum.trunc();
+        if steps != 0.0 {
+            self.wheel_accum -= steps;
+            self.set_volume(ctx, self.config.volume + steps * VOLUME_STEP, false);
+        }
+    }
 }
 
 impl eframe::App for RvpApp {
@@ -339,10 +570,17 @@ impl eframe::App for RvpApp {
         [0.0; 4] // fully transparent: the rounded window shape is painted by us
     }
 
+    fn on_exit(&mut self) {
+        self.remember_position();
+        self.resume.save();
+        self.config.save();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_input(&ctx);
         self.update_video(&ctx);
+        self.persist(&ctx);
 
         let window = ui.max_rect();
         let (fullscreen, maximized, now) = ctx.input(|i| {
@@ -367,27 +605,7 @@ impl eframe::App for RvpApp {
         }
         // Mouse wheel over the video adjusts volume (one notch ≈ 5%).
         if bg.hovered() && self.player.is_some() {
-            // Mouse notches arrive in lines; touchpads in points (accumulate).
-            let lines: f32 = ctx.input(|i| {
-                i.raw
-                    .events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
-                            egui::MouseWheelUnit::Line => delta.y,
-                            egui::MouseWheelUnit::Point => delta.y / 50.0,
-                            egui::MouseWheelUnit::Page => delta.y * 3.0,
-                        }),
-                        _ => None,
-                    })
-                    .sum()
-            });
-            self.wheel_accum += lines;
-            let steps = self.wheel_accum.trunc();
-            if steps != 0.0 {
-                self.wheel_accum -= steps;
-                self.set_volume(&ctx, self.volume + steps * VOLUME_STEP, false);
-            }
+            self.handle_wheel(&ctx);
         }
 
         // Video.
@@ -406,8 +624,11 @@ impl eframe::App for RvpApp {
         // Auto-hiding chrome.
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
         let bar = controls::bar_rect(window);
+        let panel = playlist_panel::panel_rect(window);
         let over_chrome = hover_pos.is_some_and(|p| {
-            bar.expand(8.0).contains(p) || p.y < window.top() + size::TITLEBAR_HEIGHT
+            bar.expand(8.0).contains(p)
+                || p.y < window.top() + size::TITLEBAR_HEIGHT
+                || (self.show_playlist && panel.contains(p))
         });
         let playing = self.player.as_ref().is_some_and(|p| p.state() == PlayState::Playing);
         let idle = now - self.last_activity;
@@ -427,35 +648,63 @@ impl eframe::App for RvpApp {
         let title = self.player.as_ref().map_or("rvp", |p| p.info().title.as_str()).to_owned();
         let tb = window::title_bar(ui, window, &title, alpha, fullscreen);
         if tb.open {
-            self.open_dialog(&ctx);
+            self.open_dialog(&ctx, false);
         }
 
-        if let Some(p) = self.player.as_mut() {
+        if let Some(p) = self.player.as_ref() {
             let model = ControlsModel {
                 state: p.state(),
                 position: p.position(),
                 duration: p.info().duration,
                 fullscreen,
-                volume: self.volume,
-                muted: self.muted,
+                volume: self.config.volume,
+                muted: self.config.muted,
                 has_audio: p.info().audio_codec.is_some(),
+                has_prev: true, // restarts the current file at least
+                has_next: self.playlist.has_next(),
+                playlist_open: self.show_playlist,
             };
             let a = controls::control_bar(ui, window, &model, alpha);
-            if a.toggle_pause {
-                p.toggle_pause();
-            }
-            match a.seek {
-                Some(SeekEvent::Scrub(t)) => p.seek(t, false),
-                Some(SeekEvent::Commit(t)) => p.seek(t, true),
-                None => {}
+            if let Some(p) = self.player.as_mut() {
+                if a.toggle_pause {
+                    p.toggle_pause();
+                }
+                match a.seek {
+                    Some(SeekEvent::Scrub(t)) => p.seek(t, false),
+                    Some(SeekEvent::Commit(t)) => p.seek(t, true),
+                    None => {}
+                }
             }
             if a.toggle_fullscreen {
                 Self::toggle_fullscreen(&ctx);
             }
             if a.volume.toggle_mute {
-                self.set_volume(&ctx, self.volume, !self.muted);
+                self.set_volume(&ctx, self.config.volume, !self.config.muted);
             } else if let Some(v) = a.volume.set {
                 self.set_volume(&ctx, v, false);
+            }
+            if a.prev {
+                self.prev(&ctx);
+            }
+            if a.next {
+                self.next(&ctx);
+            }
+            if a.toggle_playlist {
+                self.show_playlist = !self.show_playlist;
+            }
+        }
+
+        let panel_alpha = ctx.animate_bool_with_time(Id::new("playlist_panel"), self.show_playlist, motion::FADE);
+        if panel_alpha > 0.0 {
+            let model = PlaylistModel {
+                items: self.playlist.items(),
+                current: self.playlist.current_index(),
+                repeat: self.playlist.repeat,
+                shuffle: self.playlist.shuffle(),
+            };
+            let actions = playlist_panel::playlist_panel(ui, window, &model, panel_alpha);
+            for a in actions {
+                self.handle_playlist_action(&ctx, a);
             }
         }
 
@@ -468,6 +717,5 @@ impl eframe::App for RvpApp {
         if let Some(shot) = &mut self.debug_shot {
             shot.tick(&ctx);
         }
-
     }
 }

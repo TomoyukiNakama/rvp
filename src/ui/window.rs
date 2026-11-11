@@ -26,6 +26,18 @@ pub fn vertical_gradient(ui: &Ui, rect: Rect, top: Color32, bottom: Color32) {
     ui.painter().add(mesh);
 }
 
+/// Paints a horizontal gradient (left color → right color) into `rect`.
+pub fn horizontal_gradient(painter: &egui::Painter, rect: Rect, left: Color32, right: Color32) {
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(rect.left_top(), left);
+    mesh.colored_vertex(rect.right_top(), right);
+    mesh.colored_vertex(rect.left_bottom(), left);
+    mesh.colored_vertex(rect.right_bottom(), right);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(mesh);
+}
+
 /// Title bar overlaid on top of the video. `alpha` fades the whole bar.
 pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen: bool) -> TitleBarActions {
     let mut actions = TitleBarActions::default();

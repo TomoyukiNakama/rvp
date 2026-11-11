@@ -6,6 +6,9 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Build / run: `cargo build`, `cargo run -- <video>` (dev profile is optimized enough for real-time playback)
 - Test: `cargo test` (player integration test generates a clip via the `ffmpeg` CLI; skips if missing)
 - Test media: `scripts/gen-test-media.sh` → `target/test-media/`
+- `cargo test` does **not** rebuild `target/debug/rvp`; run `cargo build` before launching the app.
+- Keep manual runs out of the real config/state: `XDG_CONFIG_HOME=$TMPDIR/xdg/config XDG_STATE_HOME=$TMPDIR/xdg/state`.
+  `RVP_DEBUG_PLAYLIST=1` starts with the playlist panel open (for screenshots).
 - Screenshot without a compositor tool (grim doesn't work on GNOME/Wayland):
   `RVP_SCREENSHOT=out.png RVP_SCREENSHOT_AFTER=2 RVP_SCREENSHOT_EXIT=1 cargo run -- <video>` (see `src/debug_shot.rs`)
 
@@ -29,8 +32,13 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - `render/` — `VideoRenderer` (in egui-wgpu `CallbackResources`) uploads planes and draws via `VideoPaint` paint callback;
   `video.wgsl` does Y'CbCr→RGB and the rounded-corner SDF mask (premultiplied alpha). Colour math mirrored in `color_params` + tests.
   WGSL gotcha: `layout` is a reserved word.
-- `app.rs` — `eframe::App`: input, layout of chrome over the video.
-- `ui/` — `window.rs` (borderless window: title bar, resize grips, aspect fit), `controls.rs` (floating bar), `seekbar.rs`, `widgets.rs`.
+- `app.rs` — `eframe::App`: input, playlist/auto-advance, resume, debounced config save, layout of chrome over the video.
+- `playlist.rs` — pure model (next/prev, repeat Off/All/One, shuffle order, natural sort, folder expansion). Unit-tested.
+- `config.rs` — `Config` (`~/.config/rvp/config.toml`, `#[serde(default)]` so hand-edited/partial files load) and
+  `ResumeStore` (`~/.local/state/rvp/resume.toml`, keyed by canonical path; skips first 10 s and the last min(15 s, 5%)).
+  Writes are atomic (tmp + rename).
+- `ui/` — `window.rs` (borderless window: title bar, resize grips, aspect fit), `controls.rs` (floating bar), `seekbar.rs`,
+  `volume.rs`, `playlist_panel.rs` (floating right panel, drag-reorder via egui dnd payloads), `widgets.rs`.
 - `theme.rs` — design tokens (colors/sizes/motion) + egui style. Dark theme only. Use tokens, never ad-hoc colors.
   Translucent colors must use `from_rgba_unmultiplied_const` (premultiplied with rgb > a renders as additive white).
 - `fonts.rs` — CJK font via `fc-match`, Phosphor icon font (`ui::widgets::icon_font`).

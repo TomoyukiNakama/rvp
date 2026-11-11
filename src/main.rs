@@ -1,7 +1,9 @@
 mod app;
+mod config;
 mod debug_shot;
 mod fonts;
 mod player;
+mod playlist;
 mod render;
 mod theme;
 mod ui;

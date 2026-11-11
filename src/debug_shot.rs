@@ -3,6 +3,7 @@
 //! - `RVP_SCREENSHOT=/path/out.png` enables it
 //! - `RVP_SCREENSHOT_AFTER=<secs>` delay after startup (default 2.0)
 //! - `RVP_SCREENSHOT_EXIT=1` close the app once the file is written
+//! - `RVP_DEBUG_PLAYLIST=1` start with the playlist panel open (read in app.rs)
 //!
 //! Needed because compositor-level tools (e.g. `grim`) don't work on GNOME/Wayland.
 
