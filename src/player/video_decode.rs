@@ -67,6 +67,7 @@ pub(super) fn run(mut c: VideoDecodeCtx) {
                 st.drop_before = drop_before;
                 st.first_after_flush = true;
             }
+            PacketMsg::NewAudioDecoder { .. } => {} // audio-only message
             PacketMsg::Eof { serial } => {
                 if serial != st.serial {
                     continue;

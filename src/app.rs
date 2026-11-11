@@ -11,7 +11,7 @@ use egui::{
 use egui_phosphor::regular as icon;
 
 use crate::config::{Config, ResumeStore};
-use crate::player::{AudioDevice, GPU_16BIT, PlayState, Player, VideoFrame};
+use crate::player::{AudioDevice, GPU_16BIT, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
 use crate::playlist::{Playlist, Repeat, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
@@ -19,6 +19,7 @@ use crate::ui::controls::{self, ControlsModel};
 use crate::ui::playlist_panel::{self, PlaylistAction, PlaylistModel};
 use crate::ui::seekbar::SeekEvent;
 use crate::ui::speed::{self, format_speed};
+use crate::ui::tracks::{TracksAction, TracksModel, format_delay, subtitle_choices};
 use crate::ui::volume::MAX_VOLUME;
 use crate::ui::widgets::{format_time, icon_font};
 use crate::ui::window;
@@ -35,10 +36,17 @@ struct Osd {
     error: bool,
 }
 
+#[derive(Clone, Copy)]
+enum DialogKind {
+    Open,
+    Append,
+    Subtitle,
+}
+
 /// Result of the background file dialog.
 struct DialogResult {
     paths: Vec<PathBuf>,
-    append: bool,
+    kind: DialogKind,
 }
 
 pub struct RvpApp {
@@ -298,7 +306,7 @@ impl RvpApp {
                 self.mark_config_dirty(ctx);
                 self.show_osd(ctx, if on { "シャッフル: オン" } else { "シャッフル: オフ" }.into(), false);
             }
-            PlaylistAction::Add => self.open_dialog(ctx, true),
+            PlaylistAction::Add => self.open_dialog(ctx, DialogKind::Append),
             PlaylistAction::Close => self.show_playlist = false,
         }
     }
@@ -339,22 +347,115 @@ impl RvpApp {
         }
     }
 
-    fn open_dialog(&mut self, ctx: &egui::Context, append: bool) {
+    fn open_dialog(&mut self, ctx: &egui::Context, kind: DialogKind) {
         if self.dialog_open {
             return;
         }
         self.dialog_open = true;
         let tx = self.dialog_tx.clone();
         let ctx = ctx.clone();
+        let start_dir = self.current_path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
         std::thread::spawn(move || {
-            let picked = rfd::FileDialog::new()
-                .set_title(if append { "プレイリストに追加" } else { "動画を開く" })
-                .add_filter("動画", VIDEO_EXTENSIONS)
-                .add_filter("すべてのファイル", &["*"])
-                .pick_files();
-            let _ = tx.send(picked.map(|paths| DialogResult { paths, append }));
+            let mut dialog = rfd::FileDialog::new();
+            if let Some(dir) = start_dir {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog = match kind {
+                DialogKind::Open | DialogKind::Append => dialog
+                    .set_title(if matches!(kind, DialogKind::Append) { "プレイリストに追加" } else { "動画を開く" })
+                    .add_filter("動画", VIDEO_EXTENSIONS),
+                DialogKind::Subtitle => dialog.set_title("字幕ファイルを読み込む").add_filter("字幕", SUBTITLE_EXTENSIONS),
+            };
+            let picked = dialog.add_filter("すべてのファイル", &["*"]).pick_files();
+            let _ = tx.send(picked.map(|paths| DialogResult { paths, kind }));
             ctx.request_repaint();
         });
+    }
+
+    fn load_subtitles(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>) {
+        let Some(p) = self.player.as_mut() else {
+            self.show_osd(ctx, "先に動画を開いてください".into(), true);
+            return;
+        };
+        let mut msg = None;
+        for path in paths {
+            msg = Some(match p.add_external_subtitle(&path) {
+                Ok(n) => (
+                    format!("字幕: {} ({n} 件)", path.file_name().map_or_else(|| "".into(), |n| n.to_string_lossy())),
+                    false,
+                ),
+                Err(e) => (format!("{e:#}"), true),
+            });
+        }
+        if let Some((text, err)) = msg {
+            self.show_osd(ctx, text, err);
+        }
+    }
+
+    fn tracks_model(p: &Player) -> TracksModel<'_> {
+        TracksModel {
+            audio: &p.info().audio_tracks,
+            audio_sel: p.audio_stream(),
+            subs: &p.info().subtitle_tracks,
+            externals: p
+                .external_subtitles()
+                .map(|e| e.file_name().map_or_else(|| e.to_string_lossy(), |n| n.to_string_lossy()).into_owned())
+                .collect(),
+            sub_sel: p.subtitle_selection(),
+            visible: p.subtitles_visible(),
+            delay: p.subtitle_delay(),
+        }
+    }
+
+    fn handle_tracks_action(&mut self, ctx: &egui::Context, action: TracksAction) {
+        let Some(p) = self.player.as_mut() else { return };
+        let osd = match action {
+            TracksAction::Audio(stream) => {
+                p.select_audio(stream);
+                let label = p.info().audio_tracks.iter().find(|t| t.stream == stream).map(|t| t.label.clone());
+                format!("音声: {}", label.unwrap_or_default())
+            }
+            TracksAction::Subtitle(sel) => {
+                p.select_subtitle(sel);
+                let m = Self::tracks_model(p);
+                let label = subtitle_choices(&m).into_iter().find(|(s, _)| *s == sel).map(|(_, l)| l);
+                format!("字幕: {}", label.unwrap_or_default())
+            }
+            TracksAction::LoadSubtitle => {
+                self.open_dialog(ctx, DialogKind::Subtitle);
+                return;
+            }
+            TracksAction::ToggleVisible => {
+                let v = !p.subtitles_visible();
+                p.set_subtitles_visible(v);
+                (if v { "字幕: 表示" } else { "字幕: 非表示" }).to_owned()
+            }
+            TracksAction::Delay(d) => {
+                let new = if d == 0.0 { 0.0 } else { p.subtitle_delay() + d };
+                p.set_subtitle_delay(new);
+                format!("字幕のタイミング: {}", format_delay(p.subtitle_delay()))
+            }
+        };
+        self.show_osd(ctx, osd, false);
+    }
+
+    /// Next subtitle (`S`) or audio (`A`) track, wrapping around.
+    fn cycle_track(&mut self, ctx: &egui::Context, audio: bool) {
+        let Some(p) = self.player.as_ref() else { return };
+        let action = if audio {
+            let tracks = &p.info().audio_tracks;
+            let Some(cur) = p.audio_stream() else { return };
+            if tracks.len() < 2 {
+                return self.show_osd(ctx, "音声トラックは 1 つだけです".into(), false);
+            }
+            let i = tracks.iter().position(|t| t.stream == cur).map_or(0, |i| (i + 1) % tracks.len());
+            TracksAction::Audio(tracks[i].stream)
+        } else {
+            let choices = subtitle_choices(&Self::tracks_model(p));
+            let i = choices.iter().position(|(s, _)| *s == p.subtitle_selection()).map_or(0, |i| (i + 1) % choices.len());
+            TracksAction::Subtitle(choices[i].0)
+        };
+        self.handle_tracks_action(ctx, action);
     }
 
     fn set_volume(&mut self, ctx: &egui::Context, volume: f32, muted: bool) {
@@ -392,14 +493,23 @@ impl RvpApp {
             if let Some(r) = res
                 && !r.paths.is_empty()
             {
-                self.open_paths(ctx, r.paths, r.append);
+                match r.kind {
+                    DialogKind::Open => self.open_paths(ctx, r.paths, false),
+                    DialogKind::Append => self.open_paths(ctx, r.paths, true),
+                    DialogKind::Subtitle => self.load_subtitles(ctx, r.paths),
+                }
             }
         }
 
         // Drag & drop: replaces the playlist, or appends while the panel is open.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if !dropped.is_empty() {
-            self.open_paths(ctx, dropped, self.show_playlist);
+        // Subtitle files attach to the current video; everything else goes to the playlist.
+        let (subs, media): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| is_subtitle_file(p));
+        if !subs.is_empty() {
+            self.load_subtitles(ctx, subs);
+        }
+        if !media.is_empty() {
+            self.open_paths(ctx, media, self.show_playlist);
         }
 
         let (now, moved) = ctx.input(|i| (i.time, i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_down()));
@@ -410,7 +520,22 @@ impl RvpApp {
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
 
         if key(Modifiers::NONE, Key::O) {
-            self.open_dialog(ctx, false);
+            self.open_dialog(ctx, DialogKind::Open);
+        }
+        if key(Modifiers::NONE, Key::V) {
+            self.handle_tracks_action(ctx, TracksAction::ToggleVisible);
+        }
+        if key(Modifiers::NONE, Key::S) {
+            self.cycle_track(ctx, false);
+        }
+        if key(Modifiers::NONE, Key::A) {
+            self.cycle_track(ctx, true);
+        }
+        if key(Modifiers::NONE, Key::Z) {
+            self.handle_tracks_action(ctx, TracksAction::Delay(-0.1));
+        }
+        if key(Modifiers::NONE, Key::X) {
+            self.handle_tracks_action(ctx, TracksAction::Delay(0.1));
         }
         if key(Modifiers::NONE, Key::Q) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -527,7 +652,7 @@ impl RvpApp {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         if resp.clicked() {
-            self.open_dialog(ui.ctx(), false);
+            self.open_dialog(ui.ctx(), DialogKind::Open);
         }
         p.text(
             center + vec2(0.0, 112.0),
@@ -672,7 +797,13 @@ impl eframe::App for RvpApp {
         let title = self.player.as_ref().map_or("rvp", |p| p.info().title.as_str()).to_owned();
         let tb = window::title_bar(ui, window, &title, alpha, fullscreen);
         if tb.open {
-            self.open_dialog(&ctx, false);
+            self.open_dialog(&ctx, DialogKind::Open);
+        }
+
+        // Subtitles sit above the video, below the chrome; they move up while the bar is shown.
+        if let Some(text) = self.player.as_ref().and_then(Player::subtitle_text) {
+            let video = window::fit_rect(window, self.video_aspect);
+            paint_subtitle(ui, &text, video, window, controls::bar_rect(window), alpha);
         }
 
         if let Some(p) = self.player.as_ref() {
@@ -688,6 +819,7 @@ impl eframe::App for RvpApp {
                 has_next: self.playlist.has_next(),
                 playlist_open: self.show_playlist,
                 speed: self.speed,
+                tracks: Self::tracks_model(p),
             };
             let a = controls::control_bar(ui, window, &model, alpha);
             if let Some(p) = self.player.as_mut() {
@@ -720,6 +852,9 @@ impl eframe::App for RvpApp {
             if let Some(s) = a.speed {
                 self.set_speed(&ctx, s);
             }
+            if let Some(t) = a.tracks {
+                self.handle_tracks_action(&ctx, t);
+            }
         }
 
         let panel_alpha = ctx.animate_bool_with_time(Id::new("playlist_panel"), self.show_playlist, motion::FADE);
@@ -746,4 +881,31 @@ impl eframe::App for RvpApp {
             shot.tick(&ctx);
         }
     }
+}
+
+/// Draws subtitle text centred near the bottom of the video with a dark outline.
+fn paint_subtitle(ui: &egui::Ui, text: &str, video: Rect, window: Rect, bar: Rect, chrome_alpha: f32) {
+    let visible = video.intersect(window);
+    let size = (visible.height() * 0.052).clamp(18.0, 60.0);
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_owned(),
+        FontId::proportional(size),
+        Color32::WHITE,
+        visible.width() * 0.9,
+    );
+    job.halign = egui::Align::Center;
+    let galley = ui.painter().layout_job(job);
+
+    let rest = visible.bottom() - visible.height() * 0.05;
+    let raised = bar.top() - 14.0;
+    let bottom = egui::lerp(rest..=rest.min(raised), chrome_alpha);
+    let pos = pos2(visible.center().x, bottom - galley.size().y);
+
+    let p = ui.painter();
+    let outline = (size * 0.07).max(1.5);
+    let shadow = Color32::from_black_alpha(230);
+    for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
+        p.galley_with_override_text_color(pos + vec2(dx, dy) * outline, galley.clone(), shadow);
+    }
+    p.galley(pos, galley, Color32::WHITE);
 }

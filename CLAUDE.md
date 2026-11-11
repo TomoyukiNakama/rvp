@@ -25,6 +25,11 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   `Player::update` disciplines the system `Clock` to `audible_time()` (audio = master); without fresh audio the clock free-runs.
   `hold` keeps audio silent until the first video frame after open/seek is shown.
   Resampling uses swresample via raw FFI (`Resampler`), not ffmpeg-next's wrapper (its output buffer is too small when up-sampling).
+- Subtitles/tracks: `player/subtitle.rs` (cue store with dedupe, SRT/VTT/ASS parsers, ASS tag stripping, UTF-8/BOM/
+  Shift_JIS detection, `find_external`). Embedded *text* subs are decoded inline in the demux thread (`decode_subtitle`;
+  call `avsubtitle_free` — ffmpeg-next doesn't) and sent as `PlayerEvent::SubtitleCue`. Track switches go through
+  `DemuxCmd::SelectAudio/SelectSubtitle` followed by an exact re-seek (`Player::reseek`); audio switch ships a new
+  decoder to the audio thread via `PacketMsg::NewAudioDecoder`. Bitmap subs (PGS/DVD) are listed as unsupported.
 - Speed: `Player::set_speed` scales the system clock and sets `AudioQueue::speed`; the audio decoder runs
   `player/tempo.rs` (libavfilter `atempo`, chained for < 0.5×) only while speed ≠ 1. Each `AudioChunk` carries its
   speed, so one device sample = `speed / rate` media seconds. `atempo` output pts are in the *output* domain —
@@ -42,7 +47,8 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   `ResumeStore` (`~/.local/state/rvp/resume.toml`, keyed by canonical path; skips first 10 s and the last min(15 s, 5%)).
   Writes are atomic (tmp + rename).
 - `ui/` — `window.rs` (borderless window: title bar, resize grips, aspect fit), `controls.rs` (floating bar), `seekbar.rs`,
-  `volume.rs`, `playlist_panel.rs` (floating right panel, drag-reorder via egui dnd payloads), `widgets.rs`.
+  `volume.rs`, `speed.rs`, `tracks.rs` (subtitle/audio popup), `playlist_panel.rs` (floating right panel,
+  drag-reorder via egui dnd payloads), `widgets.rs`. Subtitle overlay: `app.rs::paint_subtitle` (8-way outline).
 - `theme.rs` — design tokens (colors/sizes/motion) + egui style. Dark theme only. Use tokens, never ad-hoc colors.
   Translucent colors must use `from_rgba_unmultiplied_const` (premultiplied with rgb > a renders as additive white).
 - `fonts.rs` — CJK font via `fc-match`, Phosphor icon font (`ui::widgets::icon_font`).

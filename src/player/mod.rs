@@ -9,10 +9,12 @@ mod audio_out;
 mod clock;
 mod demux;
 mod frame;
+mod subtitle;
 mod tempo;
 mod video_decode;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -24,6 +26,8 @@ use ffmpeg_next as ffmpeg;
 
 pub use audio_out::AudioDevice;
 pub use frame::{GPU_16BIT, Matrix, PlaneLayout, VideoFrame};
+pub use subtitle::{SUBTITLE_EXTENSIONS, is_subtitle_file};
+use subtitle::{Cue, SubtitleTrack};
 use audio_out::AudioShared;
 use clock::Clock;
 
@@ -44,6 +48,72 @@ pub struct MediaInfo {
     pub codec: String,
     /// Audio codec name; `None` when the file has no audio or output failed.
     pub audio_codec: Option<String>,
+    pub audio_tracks: Vec<TrackInfo>,
+    /// Embedded subtitle streams (bitmap ones are listed but unsupported).
+    pub subtitle_tracks: Vec<TrackInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackInfo {
+    pub stream: usize,
+    pub label: String,
+    pub supported: bool,
+    pub default: bool,
+}
+
+/// Which subtitles are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubSel {
+    Off,
+    /// Embedded stream index.
+    Embedded(usize),
+    /// Index into the loaded external files.
+    External(usize),
+}
+
+const TEXT_SUB_CODECS: &[&str] = &["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"];
+
+fn language_name(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "jpn" | "ja" => "日本語",
+        "eng" | "en" => "英語",
+        "chi" | "zho" | "zh" => "中国語",
+        "kor" | "ko" => "韓国語",
+        "fre" | "fra" | "fr" => "フランス語",
+        "ger" | "deu" | "de" => "ドイツ語",
+        "spa" | "es" => "スペイン語",
+        "ita" | "it" => "イタリア語",
+        "rus" | "ru" => "ロシア語",
+        "por" | "pt" => "ポルトガル語",
+        _ => return None,
+    })
+}
+
+fn track_info(stream: &ffmpeg::format::stream::Stream<'_>, n: usize, audio: bool) -> TrackInfo {
+    let meta = stream.metadata();
+    let params = stream.parameters();
+    let codec = params.id().name().to_owned();
+    let mut parts = vec![format!("#{n}")];
+    if let Some(lang) = meta.get("language").filter(|l| *l != "und") {
+        parts.push(language_name(lang).map_or_else(|| lang.to_owned(), str::to_owned));
+    }
+    if let Some(title) = meta.get("title").filter(|t| !t.trim().is_empty()) {
+        parts.push(title.to_owned());
+    }
+    let detail = if audio {
+        // SAFETY: field read on valid codec parameters.
+        let ch = unsafe { (*params.as_ptr()).ch_layout.nb_channels };
+        format!("({codec} {ch}ch)")
+    } else {
+        format!("({codec})")
+    };
+    parts.push(detail);
+    TrackInfo {
+        stream: stream.index(),
+        label: parts.join(" "),
+        supported: audio || TEXT_SUB_CODECS.contains(&codec.as_str()),
+        default: stream.disposition().contains(ffmpeg::format::stream::Disposition::DEFAULT),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +129,8 @@ pub(crate) enum DemuxCmd {
         serial_new: u64,
         exact: bool,
     },
+    SelectAudio(usize),
+    SelectSubtitle(Option<usize>),
     Stop,
 }
 
@@ -74,11 +146,17 @@ pub(crate) enum PacketMsg {
     Eof {
         serial: u64,
     },
+    /// Audio track switch (audio queue only).
+    NewAudioDecoder {
+        decoder: ffmpeg::decoder::Audio,
+        time_base: f64,
+    },
 }
 
 pub(crate) enum PlayerEvent {
     Eof { serial: u64 },
     AudioEof { serial: u64 },
+    SubtitleCue { stream: usize, cue: Cue },
     Error(String),
 }
 
@@ -107,6 +185,14 @@ pub struct Player {
     audio: Option<Arc<AudioShared>>,
     audio_eof: bool,
     speed: f32,
+    /// Selected audio stream (when audio is playing).
+    audio_stream: Option<usize>,
+    sub_embedded: HashMap<usize, SubtitleTrack>,
+    sub_external: Vec<(PathBuf, SubtitleTrack)>,
+    sub_sel: SubSel,
+    sub_visible: bool,
+    /// Positive = subtitles appear later.
+    sub_delay: f64,
     error: Option<String>,
 }
 
@@ -188,6 +274,42 @@ impl Player {
             )
         };
 
+        let (mut audio_tracks, mut subtitle_tracks) = (Vec::new(), Vec::new());
+        for st in input.streams() {
+            match st.parameters().medium() {
+                ffmpeg::media::Type::Audio => audio_tracks.push(track_info(&st, audio_tracks.len() + 1, true)),
+                ffmpeg::media::Type::Subtitle => {
+                    subtitle_tracks.push(track_info(&st, subtitle_tracks.len() + 1, false));
+                }
+                _ => {}
+            }
+        }
+
+        // Subtitles: an external file next to the video wins, then a default embedded track.
+        let sub_external: Vec<(PathBuf, SubtitleTrack)> = subtitle::find_external(path)
+            .into_iter()
+            .filter_map(|p| match subtitle::load_file(&p) {
+                Ok(t) if t.len() > 0 => Some((p, t)),
+                Ok(_) => None,
+                Err(e) => {
+                    log::warn!("subtitle {}: {e}", p.display());
+                    None
+                }
+            })
+            .collect();
+        let sub_sel = if !sub_external.is_empty() {
+            SubSel::External(0)
+        } else {
+            subtitle_tracks
+                .iter()
+                .find(|t| t.supported && t.default)
+                .map_or(SubSel::Off, |t| SubSel::Embedded(t.stream))
+        };
+        let sub_decoder = match sub_sel {
+            SubSel::Embedded(i) => demux::open_sub_decoder(&input, i),
+            _ => None,
+        };
+
         let info = MediaInfo {
             title: input
                 .metadata()
@@ -209,6 +331,8 @@ impl Player {
             audio_codec: audio_setup
                 .as_ref()
                 .and_then(|a| a.decoder.codec().map(|c| c.name().to_owned())),
+            audio_tracks,
+            subtitle_tracks,
         };
 
         let base = NEXT_SERIAL_BASE.fetch_add(1 << 32, Ordering::Relaxed);
@@ -249,6 +373,7 @@ impl Player {
             _ => (None, None),
         };
 
+        let audio_stream = audio_route.as_ref().map(|(i, _)| *i);
         thread::Builder::new().name("rvp-demux".into()).spawn({
             let ctx = demux::DemuxCtx {
                 input,
@@ -257,6 +382,7 @@ impl Player {
                 cmd_rx,
                 video_tx,
                 audio: audio_route,
+                subtitle: sub_decoder,
                 event_tx: event_tx.clone(),
                 initial_serial: base,
             };
@@ -306,6 +432,12 @@ impl Player {
             audio: audio_shared,
             audio_eof: false,
             speed: 1.0,
+            audio_stream,
+            sub_embedded: HashMap::new(),
+            sub_external,
+            sub_sel,
+            sub_visible: true,
+            sub_delay: 0.0,
             error: audio_error,
         })
     }
@@ -315,6 +447,102 @@ impl Player {
         if let Some(a) = &self.audio {
             let v = volume.clamp(0.0, 1.5);
             a.lock().gain = if muted { 0.0 } else { v * v * v };
+        }
+    }
+
+    // ---- Tracks & subtitles ----------------------------------------------------
+
+    pub fn audio_stream(&self) -> Option<usize> {
+        self.audio_stream
+    }
+
+    /// Switches the audio track (only when audio output is active).
+    pub fn select_audio(&mut self, stream: usize) {
+        if self.audio.is_none() || self.audio_stream == Some(stream) {
+            return;
+        }
+        self.audio_stream = Some(stream);
+        let _ = self.cmd_tx.send(DemuxCmd::SelectAudio(stream));
+        self.reseek();
+    }
+
+    pub fn subtitle_selection(&self) -> SubSel {
+        self.sub_sel
+    }
+
+    pub fn external_subtitles(&self) -> impl Iterator<Item = &Path> {
+        self.sub_external.iter().map(|(p, _)| p.as_path())
+    }
+
+    pub fn select_subtitle(&mut self, sel: SubSel) {
+        if sel == self.sub_sel {
+            return;
+        }
+        let was_embedded = matches!(self.sub_sel, SubSel::Embedded(_));
+        self.sub_sel = sel;
+        match sel {
+            SubSel::Embedded(i) => {
+                let _ = self.cmd_tx.send(DemuxCmd::SelectSubtitle(Some(i)));
+                // Re-read from here so cues already passed by the demuxer arrive.
+                self.reseek();
+            }
+            _ if was_embedded => {
+                let _ = self.cmd_tx.send(DemuxCmd::SelectSubtitle(None));
+            }
+            _ => {}
+        }
+        self.sub_visible = true;
+    }
+
+    /// Loads an external subtitle file and selects it.
+    pub fn add_external_subtitle(&mut self, path: &Path) -> anyhow::Result<usize> {
+        let track = subtitle::load_file(path).with_context(|| format!("字幕を読み込めません: {}", path.display()))?;
+        if track.len() == 0 {
+            anyhow::bail!("字幕が見つかりません: {}", path.display());
+        }
+        let n = track.len();
+        self.sub_external.push((path.to_path_buf(), track));
+        self.select_subtitle(SubSel::External(self.sub_external.len() - 1));
+        Ok(n)
+    }
+
+    pub fn subtitles_visible(&self) -> bool {
+        self.sub_visible
+    }
+
+    pub fn set_subtitles_visible(&mut self, visible: bool) {
+        self.sub_visible = visible;
+    }
+
+    pub fn subtitle_delay(&self) -> f64 {
+        self.sub_delay
+    }
+
+    pub fn set_subtitle_delay(&mut self, delay: f64) {
+        self.sub_delay = (delay * 1000.0).round() / 1000.0;
+    }
+
+    /// Subtitle text to show right now, if any.
+    pub fn subtitle_text(&self) -> Option<String> {
+        if !self.sub_visible {
+            return None;
+        }
+        let track = match self.sub_sel {
+            SubSel::Off => return None,
+            SubSel::Embedded(i) => self.sub_embedded.get(&i)?,
+            SubSel::External(i) => &self.sub_external.get(i)?.1,
+        };
+        let lines = track.active(self.position() - self.sub_delay);
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
+    /// Seeks to the current position (after a track switch).
+    fn reseek(&mut self) {
+        let pos = self.position();
+        let resume = self.state == PlayState::Playing;
+        self.seek(pos, true);
+        if resume {
+            self.play();
         }
     }
 
@@ -447,6 +675,7 @@ impl Player {
                 PlayerEvent::AudioEof { serial: s } if s == serial => self.audio_eof = true,
                 PlayerEvent::Eof { .. } | PlayerEvent::AudioEof { .. } => {}
                 PlayerEvent::Error(e) => self.error = Some(e),
+                PlayerEvent::SubtitleCue { stream, cue } => self.sub_embedded.entry(stream).or_default().insert(cue),
             }
         }
 
@@ -683,6 +912,115 @@ mod tests {
         assert!(drift < 0.02, "A/V drift after reopen {drift}");
         let pos = p.position();
         assert!((0.4..0.6).contains(&pos), "position 0.5 s after reopen: {pos}");
+    }
+
+    /// 8 s clip with two audio tracks and two embedded subtitle tracks
+    /// (SRT/jpn default, ASS/eng). Returns the clip path.
+    fn sample_tracks(dir: &Path) -> Option<PathBuf> {
+        std::fs::create_dir_all(dir).ok()?;
+        let path = dir.join("tracks.mkv");
+        if path.exists() {
+            return Some(path);
+        }
+        let srt = dir.join("in_ja.srt");
+        std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:03,000\nこんにちは\n\n2\n00:00:05,000 --> 00:00:07,000\n<i>二番目</i>\n").ok()?;
+        let ass = dir.join("in_en.ass");
+        std::fs::write(
+            &ass,
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default,Arial,20\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\i1}Hello{\\i0}\\Nworld\n",
+        )
+        .ok()?;
+        let ok = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=8"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=8"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=8"])
+            .arg("-i").arg(&srt)
+            .arg("-i").arg(&ass)
+            .args(["-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3", "-map", "4"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-c:a", "aac", "-c:s:0", "srt", "-c:s:1", "ass"])
+            .args(["-metadata:s:a:1", "language=eng", "-metadata:s:s:0", "language=jpn", "-metadata:s:s:1", "language=eng"])
+            .args(["-disposition:s:0", "default", "-disposition:s:1", "0"])
+            .arg(&path)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(path)
+    }
+
+    fn play_until(p: &mut Player, t: f64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while p.position() < t {
+            p.update();
+            assert!(Instant::now() < deadline, "stuck at {}", p.position());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn tracks_and_subtitles() {
+        init().unwrap();
+        let dir = std::env::temp_dir().join(format!("rvp-tracks-{}", std::process::id()));
+        let Some(path) = sample_tracks(&dir) else {
+            eprintln!("ffmpeg CLI not available; skipping");
+            return;
+        };
+        let dev = AudioDevice::open().ok();
+        let mut p = Player::open(&path, egui::Context::default(), dev.as_ref()).unwrap();
+
+        let info = p.info().clone();
+        assert_eq!(info.audio_tracks.len(), 2);
+        assert_eq!(info.subtitle_tracks.len(), 2);
+        assert!(info.subtitle_tracks.iter().all(|t| t.supported));
+        assert!(info.subtitle_tracks[0].label.contains("日本語"), "{}", info.subtitle_tracks[0].label);
+        assert!(info.audio_tracks[1].label.contains("英語"), "{}", info.audio_tracks[1].label);
+        let (ja, en) = (info.subtitle_tracks[0].stream, info.subtitle_tracks[1].stream);
+
+        // Default-flagged embedded track is picked automatically.
+        assert_eq!(p.subtitle_selection(), SubSel::Embedded(ja));
+        next_frame(&mut p);
+        play_until(&mut p, 1.5);
+        assert_eq!(p.subtitle_text().as_deref(), Some("こんにちは"));
+        play_until(&mut p, 3.3);
+        assert_eq!(p.subtitle_text(), None, "cue ended at 3 s");
+
+        // Switching to the ASS track re-reads from the current position.
+        p.seek(1.2, true);
+        p.select_subtitle(SubSel::Embedded(en));
+        next_frame(&mut p);
+        play_until(&mut p, 1.6);
+        assert_eq!(p.subtitle_text().as_deref(), Some("Hello\nworld"));
+
+        // Delay shifts cue timing; hiding suppresses text.
+        p.set_subtitle_delay(1.0); // cue now spans 2..4 s
+        assert_eq!(p.subtitle_text(), None);
+        p.set_subtitle_delay(0.0);
+        p.set_subtitles_visible(false);
+        assert_eq!(p.subtitle_text(), None);
+        p.set_subtitles_visible(true);
+
+        // Audio track switch keeps playing (when an output device exists).
+        if dev.is_some() {
+            let second = info.audio_tracks[1].stream;
+            p.select_audio(second);
+            assert_eq!(p.audio_stream(), Some(second));
+            next_frame(&mut p);
+            let start = p.position();
+            let drift = run_for(&mut p, 0.8);
+            assert!(drift < 0.03, "A/V drift after audio switch {drift}");
+            assert!(p.position() - start > 0.6, "playback stalled after audio switch");
+        }
+
+        // An external file next to the video takes precedence on open.
+        drop(p);
+        let ext = dir.join("tracks.srt");
+        std::fs::write(&ext, "1\n00:00:00,500 --> 00:00:02,000\n外部字幕\n").unwrap();
+        let mut p = Player::open(&path, egui::Context::default(), None).unwrap();
+        assert_eq!(p.subtitle_selection(), SubSel::External(0));
+        next_frame(&mut p);
+        play_until(&mut p, 0.8);
+        assert_eq!(p.subtitle_text().as_deref(), Some("外部字幕"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn next_frame(p: &mut Player) -> VideoFrame {

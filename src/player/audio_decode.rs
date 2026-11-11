@@ -68,6 +68,14 @@ pub(super) fn run(mut c: AudioDecodeCtx) {
                 st.resampler = None; // drop buffered resampler state
                 st.tempo = None;
             }
+            PacketMsg::NewAudioDecoder { decoder, time_base } => {
+                // Track switch; the player follows up with a seek (Flush).
+                c.decoder = decoder;
+                c.time_base = time_base;
+                st.resampler = None;
+                st.tempo = None;
+                st.next_pts = None;
+            }
             PacketMsg::Eof { serial } => {
                 if serial != st.serial {
                     continue;

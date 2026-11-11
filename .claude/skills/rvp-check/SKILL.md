@@ -20,6 +20,8 @@ description: Build, test and visually verify the rvp video player — generate t
    Then Read the PNG and check: rounded window corners (transparent), video aspect/letterboxing,
    control bar legibility, Japanese text renders (no tofu), burnt-in timestamp ≈ AFTER seconds.
    Without a file argument the empty state is shown.
+   Subtitles: `tracks.mkv` (embedded SRT/jpn default + ASS/eng, two audio tracks; cue at 1–4 s) and
+   `external/clip.mp4` (+ Shift_JIS `clip.srt`, cue at 0.5–5 s) — screenshot at ~2 s.
    Colour accuracy: screenshot `target/test-media/bars_bt709.mp4` and compare pixel values at bar centres
    with `bars_reference.png` (expect within ~±4/255). Test media must carry colour tags; untagged HD is
    assumed BT.709 (so an RGB source converted with ffmpeg's default BT.601 looks slightly off — not a bug).

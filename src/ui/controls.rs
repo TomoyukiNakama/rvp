@@ -5,12 +5,13 @@ use egui_phosphor::regular as icon;
 
 use super::seekbar::{SeekEvent, seek_bar};
 use super::speed::speed_button;
+use super::tracks::{TracksAction, TracksModel, tracks_button};
 use super::volume::{VolumeActions, volume_control};
 use super::widgets::{format_time, icon_button, icon_button_ex};
 use crate::player::PlayState;
 use crate::theme::{color, panel_shadow, size};
 
-pub struct ControlsModel {
+pub struct ControlsModel<'a> {
     pub state: PlayState,
     pub position: f64,
     pub duration: Option<f64>,
@@ -22,6 +23,7 @@ pub struct ControlsModel {
     pub has_next: bool,
     pub playlist_open: bool,
     pub speed: f32,
+    pub tracks: TracksModel<'a>,
 }
 
 #[derive(Default)]
@@ -34,6 +36,7 @@ pub struct ControlsActions {
     pub next: bool,
     pub toggle_playlist: bool,
     pub speed: Option<f32>,
+    pub tracks: Option<TracksAction>,
 }
 
 /// Rect the control bar occupies (used for hover detection by the caller).
@@ -46,7 +49,7 @@ pub fn bar_rect(window: Rect) -> Rect {
     )
 }
 
-pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> ControlsActions {
+pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel<'_>, alpha: f32) -> ControlsActions {
     let mut a = ControlsActions::default();
     if alpha <= 0.0 {
         return a;
@@ -121,6 +124,7 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel, alpha: f32) -> 
                 }
                 ui.add_space(2.0);
                 a.speed = speed_button(ui, m.speed);
+                a.tracks = tracks_button(ui, &m.tracks);
                 ui.add_space(6.0);
                 let total = m.duration.map(format_time).unwrap_or_else(|| "--:--".into());
                 ui.add(egui::Label::new(RichText::new(total).color(color::TEXT_DIM).monospace()).selectable(false));

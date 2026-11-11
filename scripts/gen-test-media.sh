@@ -33,4 +33,21 @@ ff -f lavfi -i smptehdbars=size=1920x1080:rate=30:duration=5 \
    "${bt709[@]}" -c:v libx264 -crf 1 "$out/bars_bt709.mp4"
 ff -f lavfi -i smptehdbars=size=1920x1080 -frames:v 1 "$out/bars_reference.png"
 
+# Two audio tracks + embedded subtitles (SRT/jpn default, ASS/eng) + an external SRT.
+tmp="$(mktemp -d)"
+printf '1\n00:00:01,000 --> 00:00:04,000\nこんにちは、字幕のテストです\n\n2\n00:00:05,000 --> 00:00:08,000\n<i>二行目も</i>\n表示できます\n' > "$tmp/ja.srt"
+printf '[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,{\\i1}English{\\i0} subtitle\\Nsecond line\n' > "$tmp/en.ass"
+ff -f lavfi -i testsrc2=size=1280x720:rate=30:duration=12 \
+   -f lavfi -i sine=frequency=440:duration=12 -f lavfi -i sine=frequency=660:duration=12 \
+   -i "$tmp/ja.srt" -i "$tmp/en.ass" \
+   -map 0:v -map 1:a -map 2:a -map 3 -map 4 \
+   "${bt709[@]}" -c:v libx264 -c:a aac -c:s:0 srt -c:s:1 ass \
+   -metadata:s:a:0 language=jpn -metadata:s:a:1 language=eng \
+   -metadata:s:s:0 language=jpn -metadata:s:s:1 language=eng \
+   -disposition:s:0 default -disposition:s:1 0 "$out/tracks.mkv"
+mkdir -p "$out/external"
+cp "$out/h264_720p60.mp4" "$out/external/clip.mp4"
+printf '1\n00:00:00,500 --> 00:00:05,000\n外部 SRT ファイル（Shift_JIS）\n' | iconv -f UTF-8 -t SHIFT_JIS > "$out/external/clip.srt"
+rm -rf "$tmp"
+
 ls -lh "$out"
