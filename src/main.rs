@@ -2,10 +2,29 @@ mod app;
 mod debug_shot;
 mod fonts;
 mod player;
+mod render;
 mod theme;
 mod ui;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use egui_wgpu::wgpu;
+
+/// eframe's default wgpu setup, additionally requesting 16-bit normalized
+/// textures when the adapter has them (high-bit-depth video without CPU conversion).
+fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+    let mut cfg = egui_wgpu::WgpuConfiguration::default();
+    if let egui_wgpu::WgpuSetup::CreateNew(create) = &mut cfg.wgpu_setup {
+        let base = create.device_descriptor.clone();
+        create.device_descriptor = Arc::new(move |adapter| {
+            let mut desc = base(adapter);
+            desc.required_features |= adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+            desc
+        });
+    }
+    cfg
+}
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("rvp=info")).init();
@@ -26,6 +45,7 @@ fn main() -> eframe::Result {
             .with_decorations(false)
             .with_transparent(true)
             .with_drag_and_drop(true),
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
 

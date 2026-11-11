@@ -20,5 +20,8 @@ description: Build, test and visually verify the rvp video player — generate t
    Then Read the PNG and check: rounded window corners (transparent), video aspect/letterboxing,
    control bar legibility, Japanese text renders (no tofu), burnt-in timestamp ≈ AFTER seconds.
    Without a file argument the empty state is shown.
+   Colour accuracy: screenshot `target/test-media/bars_bt709.mp4` and compare pixel values at bar centres
+   with `bars_reference.png` (expect within ~±4/255). Test media must carry colour tags; untagged HD is
+   assumed BT.709 (so an RGB source converted with ffmpeg's default BT.601 looks slightly off — not a bug).
 4. Report what was checked and anything that looked wrong. Interactive behaviour (drag, resize,
    keyboard) can't be screenshotted — say it was not verified rather than claiming it works.

@@ -8,6 +8,7 @@ mod audio_decode;
 mod audio_out;
 mod clock;
 mod demux;
+mod frame;
 mod video_decode;
 
 use std::path::Path;
@@ -21,6 +22,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ffmpeg_next as ffmpeg;
 
 pub use audio_out::AudioDevice;
+pub use frame::{GPU_16BIT, Matrix, PlaneLayout, VideoFrame};
 use audio_out::AudioShared;
 use clock::Clock;
 
@@ -31,25 +33,6 @@ static NEXT_SERIAL_BASE: AtomicU64 = AtomicU64::new(1 << 32);
 const PACKET_QUEUE: usize = 128;
 const AUDIO_PACKET_QUEUE: usize = 256;
 const FRAME_QUEUE: usize = 6;
-
-/// A decoded, display-ready video frame.
-pub struct VideoFrame {
-    pub serial: u64,
-    /// Presentation time in seconds (relative to media start).
-    pub pts: f64,
-    pub duration: f64,
-    pub width: usize,
-    pub height: usize,
-    pub sample_aspect: f32,
-    pub rgba: Vec<u8>,
-}
-
-impl VideoFrame {
-    /// Display aspect ratio (width / height), taking non-square pixels into account.
-    pub fn display_aspect(&self) -> f32 {
-        self.width as f32 * self.sample_aspect / self.height as f32
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
@@ -690,7 +673,11 @@ mod tests {
 
         let f = next_frame(&mut p);
         assert!(f.pts.abs() < 0.05, "first pts {}", f.pts);
-        assert_eq!(f.rgba.len(), 320 * 240 * 4);
+        assert_eq!(f.layout, PlaneLayout::Planar);
+        assert_eq!((f.planes[0].width, f.planes[1].width, f.planes[1].height), (320, 160, 120));
+        assert_eq!(f.matrix, Matrix::Bt601);
+        let (y, stride) = f.plane_data(0);
+        assert!(stride >= 320 && y.len() >= stride * 239 + 320);
 
         // Exact seek lands on the requested frame even mid-GOP.
         p.pause();

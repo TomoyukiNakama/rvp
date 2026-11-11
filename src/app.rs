@@ -1,14 +1,17 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use egui::{
-    Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Key, Modifiers, Rect, Sense,
-    TextureHandle, TextureOptions, ViewportCommand, pos2, vec2,
+    Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Key, Modifiers, Rect, Sense, ViewportCommand, pos2,
+    vec2,
 };
 use egui_phosphor::regular as icon;
 
-use crate::player::{AudioDevice, PlayState, Player};
+use crate::player::{AudioDevice, GPU_16BIT, PlayState, Player, VideoFrame};
+use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
 use crate::ui::seekbar::SeekEvent;
@@ -29,7 +32,8 @@ struct Osd {
 pub struct RvpApp {
     player: Option<Player>,
     audio: Option<AudioDevice>,
-    texture: Option<TextureHandle>,
+    /// Frame currently on screen (uploaded to the GPU by the paint callback).
+    current: Option<Arc<VideoFrame>>,
     video_aspect: f32,
     last_activity: f64,
     osd: Option<Osd>,
@@ -45,6 +49,18 @@ pub struct RvpApp {
 impl RvpApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         crate::fonts::install(&cc.egui_ctx);
+        if let Some(rs) = &cc.wgpu_render_state {
+            let gpu16 = rs.device.features().contains(egui_wgpu::wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+            GPU_16BIT.store(gpu16, Ordering::Relaxed);
+            VideoRenderer::install(rs);
+            let info = rs.adapter.get_info();
+            log::info!(
+                "GPU: {} ({:?}), target {:?}, 16-bit textures: {gpu16}",
+                info.name,
+                info.backend,
+                rs.target_format
+            );
+        }
         theme::apply(&cc.egui_ctx);
 
         // Open the audio device up front: it plays a few hundred ms of silence
@@ -61,7 +77,7 @@ impl RvpApp {
         let mut app = Self {
             player: None,
             audio,
-            texture: None,
+            current: None,
             video_aspect: 16.0 / 9.0,
             last_activity: 0.0,
             osd: None,
@@ -100,7 +116,7 @@ impl RvpApp {
                 };
                 ctx.send_viewport_cmd(ViewportCommand::Title(format!("{} — rvp", info.title)));
                 self.player = Some(p);
-                self.texture = None;
+                self.current = None;
             }
             Err(e) => {
                 log::error!("{e:#}");
@@ -235,11 +251,7 @@ impl RvpApp {
         let Some(p) = self.player.as_mut() else { return };
         if let Some(frame) = p.update() {
             self.video_aspect = frame.display_aspect();
-            let image = egui::ColorImage::from_rgba_unmultiplied([frame.width, frame.height], &frame.rgba);
-            match &mut self.texture {
-                Some(t) => t.set(image, TextureOptions::LINEAR),
-                None => self.texture = Some(ctx.load_texture("video", image, TextureOptions::LINEAR)),
-            }
+            self.current = Some(Arc::new(frame));
         }
         if let Some(e) = p.take_error() {
             self.show_osd(ctx, e, true);
@@ -379,12 +391,16 @@ impl eframe::App for RvpApp {
         }
 
         // Video.
-        if let Some(tex) = &self.texture {
+        if let Some(frame) = &self.current {
             let video = window::fit_rect(window, self.video_aspect);
-            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            ui.painter().add(
-                egui::epaint::RectShape::filled(video, window_radius, Color32::WHITE).with_texture(tex.id(), uv),
-            );
+            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                video,
+                VideoPaint {
+                    frame: frame.clone(),
+                    rect: video,
+                    radius: f32::from(radius),
+                },
+            ));
         }
 
         // Auto-hiding chrome.

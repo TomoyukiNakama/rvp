@@ -5,10 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
 use ffmpeg_next as ffmpeg;
-use ffmpeg::format::Pixel;
-use ffmpeg::software::scaling;
 
-use super::{PacketMsg, PlayerEvent, VideoFrame};
+use super::frame::{FrameConverter, VideoFrame};
+use super::{PacketMsg, PlayerEvent};
 
 pub(super) struct VideoDecodeCtx {
     pub decoder: ffmpeg::decoder::Video,
@@ -32,9 +31,8 @@ struct State {
     drop_before: Option<f64>,
     first_after_flush: bool,
     last_pts: f64,
-    scaler: Option<(scaling::Context, Pixel, u32, u32)>,
+    converter: FrameConverter,
     decoded: ffmpeg::frame::Video,
-    rgba: ffmpeg::frame::Video,
 }
 
 pub(super) fn run(mut c: VideoDecodeCtx) {
@@ -43,9 +41,8 @@ pub(super) fn run(mut c: VideoDecodeCtx) {
         drop_before: None,
         first_after_flush: true,
         last_pts: 0.0,
-        scaler: None,
+        converter: FrameConverter::default(),
         decoded: ffmpeg::frame::Video::empty(),
-        rgba: ffmpeg::frame::Video::empty(),
     };
 
     while let Ok(msg) = c.pkt_rx.recv() {
@@ -111,7 +108,8 @@ fn drain(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
             st.drop_before = None;
         }
 
-        let Some(frame) = convert(st, pts, c.frame_duration, c.stream_sar) else {
+        let decoded = std::mem::replace(&mut st.decoded, ffmpeg::frame::Video::empty());
+        let Some(frame) = st.converter.make(decoded, st.serial, pts, c.frame_duration, c.stream_sar) else {
             continue;
         };
         if c.frame_tx.send(frame).is_err() {
@@ -123,53 +121,4 @@ fn drain(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
         }
     }
     true
-}
-
-fn convert(st: &mut State, pts: f64, duration: f64, stream_sar: Option<f64>) -> Option<VideoFrame> {
-    let src = &st.decoded;
-    let (fmt, w, h) = (src.format(), src.width(), src.height());
-    if w == 0 || h == 0 {
-        return None;
-    }
-
-    let needs_new = !matches!(&st.scaler, Some((_, f, sw, sh)) if *f == fmt && *sw == w && *sh == h);
-    if needs_new {
-        match scaling::Context::get(fmt, w, h, Pixel::RGBA, w, h, scaling::Flags::BILINEAR) {
-            Ok(s) => st.scaler = Some((s, fmt, w, h)),
-            Err(e) => {
-                log::error!("swscale init failed for {fmt:?} {w}x{h}: {e}");
-                return None;
-            }
-        }
-    }
-    let (scaler, ..) = st.scaler.as_mut()?;
-    if let Err(e) = scaler.run(src, &mut st.rgba) {
-        log::error!("swscale failed: {e}");
-        return None;
-    }
-
-    let (w, h) = (w as usize, h as usize);
-    let stride = st.rgba.stride(0);
-    let data = st.rgba.data(0);
-    let mut rgba = Vec::with_capacity(w * h * 4);
-    for row in 0..h {
-        rgba.extend_from_slice(&data[row * stride..row * stride + w * 4]);
-    }
-
-    let frame_sar = src.aspect_ratio();
-    let sar = stream_sar.unwrap_or(if frame_sar.numerator() > 0 && frame_sar.denominator() > 0 {
-        f64::from(frame_sar)
-    } else {
-        1.0
-    });
-
-    Some(VideoFrame {
-        serial: st.serial,
-        pts,
-        duration,
-        width: w,
-        height: h,
-        sample_aspect: sar as f32,
-        rgba,
-    })
 }
