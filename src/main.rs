@@ -7,6 +7,7 @@ mod playlist;
 mod render;
 mod theme;
 mod ui;
+mod wayland_dnd;
 
 use std::path::PathBuf;
 use std::sync::Arc;

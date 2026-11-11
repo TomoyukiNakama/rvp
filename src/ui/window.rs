@@ -12,18 +12,38 @@ use crate::theme::{color, size};
 #[derive(Default)]
 pub struct TitleBarActions {
     pub open: bool,
+    pub open_folder: bool,
 }
 
-/// Paints a vertical gradient (top color → bottom color) into `rect`.
-pub fn vertical_gradient(ui: &Ui, rect: Rect, top: Color32, bottom: Color32) {
+/// Vertical gradient (top → bottom colour) filling `rect` with its top corners
+/// rounded by `radius`, so it never paints outside a rounded window.
+pub fn rounded_top_gradient(painter: &egui::Painter, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
+    let color_at = |y: f32| {
+        let t = ((y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+        egui::ecolor::Rgba::from(top) * (1.0 - t) + egui::ecolor::Rgba::from(bottom) * t
+    };
+    let r = radius.min(rect.width() / 2.0).min(rect.height());
+    let mut outline = vec![rect.left_bottom()];
+    const STEPS: usize = 10;
+    for (cx, from) in [(rect.left() + r, std::f32::consts::PI), (rect.right() - r, 1.5 * std::f32::consts::PI)] {
+        for i in 0..=STEPS {
+            let a = from + (i as f32 / STEPS as f32) * std::f32::consts::FRAC_PI_2;
+            outline.push(pos2(cx + r * a.cos(), rect.top() + r + r * a.sin()));
+        }
+    }
+    outline.push(rect.right_bottom());
+
+    // The shape is convex: a fan from its centre covers it exactly.
     let mut mesh = Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.left_bottom(), bottom);
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    ui.painter().add(mesh);
+    let c = rect.center();
+    mesh.colored_vertex(c, color_at(c.y).into());
+    for p in &outline {
+        mesh.colored_vertex(*p, color_at(p.y).into());
+    }
+    for i in 1..outline.len() as u32 {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    painter.add(mesh);
 }
 
 /// Paints a horizontal gradient (left color → right color) into `rect`.
@@ -39,7 +59,7 @@ pub fn horizontal_gradient(painter: &egui::Painter, rect: Rect, left: Color32, r
 }
 
 /// Title bar overlaid on top of the video. `alpha` fades the whole bar.
-pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen: bool) -> TitleBarActions {
+pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen: bool, radius: f32) -> TitleBarActions {
     let mut actions = TitleBarActions::default();
     let rect = Rect::from_min_size(window.min, vec2(window.width(), size::TITLEBAR_HEIGHT));
 
@@ -51,7 +71,7 @@ pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen:
     let ui = &mut child;
 
     let shade = Rect::from_min_size(rect.min, vec2(rect.width(), rect.height() * 1.8));
-    vertical_gradient(ui, shade, Color32::from_black_alpha(150), Color32::TRANSPARENT);
+    rounded_top_gradient(ui.painter(), shade, radius, Color32::from_black_alpha(150), Color32::TRANSPARENT);
 
     ui.add_space(14.0);
     ui.label(egui::RichText::new(icon::FILM_SLATE).font(icon_font(16.0)).color(color::ACCENT));
@@ -84,7 +104,10 @@ pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen:
             }
         }
         ui.add_space(4.0);
-        if icon_button(ui, icon::FOLDER_OPEN, "ファイルを開く (O)").clicked() {
+        if icon_button(ui, icon::FOLDER_OPEN, "フォルダを開く (Shift+O)").clicked() {
+            actions.open_folder = true;
+        }
+        if icon_button(ui, icon::FILE_VIDEO, "ファイルを開く (O)").clicked() {
             actions.open = true;
         }
     });
@@ -93,7 +116,9 @@ pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen:
 }
 
 /// Invisible grips along the edges that start an OS-driven resize.
-pub fn resize_grips(ui: &Ui, window: Rect) {
+/// Returns `true` when a resize was started this frame.
+pub fn resize_grips(ui: &Ui, window: Rect) -> bool {
+    let mut started = false;
     let g = size::RESIZE_GRIP;
     let c = g * 2.5; // corners are larger to be easy to hit
     let (l, r, t, b) = (window.left(), window.right(), window.top(), window.bottom());
@@ -114,8 +139,10 @@ pub fn resize_grips(ui: &Ui, window: Rect) {
         }
         if resp.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::BeginResize(dir));
+            started = true;
         }
     }
+    started
 }
 
 /// Fits a frame with the given display aspect into `area`, centered.

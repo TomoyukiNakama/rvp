@@ -24,6 +24,7 @@ pub struct ControlsModel<'a> {
     pub playlist_open: bool,
     pub speed: f32,
     pub tracks: TracksModel<'a>,
+    pub repeat: crate::playlist::Repeat,
 }
 
 #[derive(Default)]
@@ -37,6 +38,7 @@ pub struct ControlsActions {
     pub toggle_playlist: bool,
     pub speed: Option<f32>,
     pub tracks: Option<TracksAction>,
+    pub cycle_repeat: bool,
 }
 
 /// Rect the control bar occupies (used for hover detection by the caller).
@@ -100,6 +102,13 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel<'_>, alpha: f32)
                 };
                 if icon_button(ui, fs_icon, tip).clicked() {
                     a.toggle_fullscreen = true;
+                }
+                let looping = m.repeat != crate::playlist::Repeat::Off;
+                let loop_icon =
+                    if m.repeat == crate::playlist::Repeat::One { icon::REPEAT_ONCE } else { icon::REPEAT };
+                let tip = format!("{} (L)", m.repeat.label());
+                if super::playlist_panel::toggle_icon(ui, loop_icon, &tip, looping).clicked() {
+                    a.cycle_repeat = true;
                 }
                 let pl = icon_button_ex(
                     ui,

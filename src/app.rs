@@ -12,7 +12,7 @@ use egui_phosphor::regular as icon;
 
 use crate::config::{Config, ResumeStore};
 use crate::player::{AudioDevice, GPU_16BIT, HwDec, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
-use crate::playlist::{Playlist, Repeat, VIDEO_EXTENSIONS};
+use crate::playlist::{Playlist, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
@@ -39,6 +39,7 @@ struct Osd {
 #[derive(Clone, Copy)]
 enum DialogKind {
     Open,
+    OpenFolder,
     Append,
     Subtitle,
 }
@@ -72,6 +73,18 @@ pub struct RvpApp {
     dialog_rx: Receiver<Option<DialogResult>>,
     dialog_open: bool,
     wheel_accum: f32,
+    /// A compositor move/resize grab was started: it swallows the button
+    /// release, so one is injected into egui's input on the next frame.
+    inject_release: bool,
+    /// Drops on Wayland (winit only delivers them on X11).
+    dnd_rx: Option<Receiver<crate::wayland_dnd::DndEvent>>,
+    /// A file drag is hovering over the window.
+    drag_hover: bool,
+    /// Window-to-video aspect fitting: last seen size, when it last changed,
+    /// and the (size, aspect) pair already handled.
+    fit_size: egui::Vec2,
+    fit_changed_at: f64,
+    fit_done: Option<(egui::Vec2, f32)>,
     /// Playback speed, kept across files for the session (not persisted).
     speed: f32,
     debug_shot: Option<crate::debug_shot::DebugShot>,
@@ -130,6 +143,12 @@ impl RvpApp {
             dialog_rx,
             dialog_open: false,
             wheel_accum: 0.0,
+            inject_release: false,
+            dnd_rx: start_wayland_dnd(cc),
+            drag_hover: false,
+            fit_size: egui::Vec2::ZERO,
+            fit_changed_at: 0.0,
+            fit_done: None,
             // Debug aid for screenshots (see debug_shot.rs).
             speed: std::env::var("RVP_DEBUG_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0),
             debug_shot: crate::debug_shot::DebugShot::from_env(),
@@ -156,7 +175,7 @@ impl RvpApp {
             return;
         }
         let single = paths.len() == 1;
-        self.playlist.set(paths, single && self.config.playlist_from_folder);
+        self.playlist.set(paths, single && self.config.queue_siblings);
         if self.playlist.len() == 0 {
             self.show_osd(ctx, "再生できる動画が見つかりません".into(), true);
             return;
@@ -173,8 +192,9 @@ impl RvpApp {
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         self.remember_position();
         // Drop the old player first so its threads stop before new ones start.
+        // The last frame stays on screen until the new file's first frame
+        // replaces it (no black flash between consecutive files).
         self.player = None;
-        self.current = None;
         self.current_path = None;
         self.end_handled = false;
         match Player::open(&path, ctx.clone(), self.audio.as_ref(), self.config.hwdec) {
@@ -185,11 +205,11 @@ impl RvpApp {
                     self.show_osd(ctx, e, true);
                 }
                 let info = p.info();
-                self.video_aspect = if info.height > 0 {
-                    info.width as f32 / info.height as f32
-                } else {
-                    16.0 / 9.0
-                };
+                // With a previous frame still shown, keep its aspect until the
+                // new first frame (which carries the exact SAR) arrives.
+                if self.current.is_none() && info.height > 0 {
+                    self.video_aspect = info.width as f32 / info.height as f32;
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Title(format!("{} — rvp", info.title)));
 
                 let resumed = self.config.resume.then(|| self.resume.get(&path)).flatten();
@@ -205,6 +225,7 @@ impl RvpApp {
             }
             Err(e) => {
                 log::error!("{e:#}");
+                self.current = None;
                 self.show_osd(ctx, format!("{e:#}"), true);
             }
         }
@@ -256,13 +277,25 @@ impl RvpApp {
         if let Some(path) = &self.current_path {
             self.resume.forget(path);
         }
-        if self.playlist.repeat == Repeat::One {
-            if let Some(p) = self.player.as_mut() {
-                p.play(); // restarts from the beginning
+        let before = self.playlist.current_index();
+        if self.playlist.on_finished().is_some() {
+            // Looping back to the same entry (repeat one, or a one-item playlist
+            // with repeat all): restart in place instead of reopening the file.
+            if self.playlist.current_index() == before
+                && let Some(p) = self.player.as_mut()
+            {
+                p.play(); // from Ended: seeks to 0 and plays
+            } else {
+                self.play_current(ctx);
             }
-        } else if self.playlist.on_finished().is_some() {
-            self.play_current(ctx);
         }
+    }
+
+    fn cycle_repeat(&mut self, ctx: &egui::Context) {
+        self.playlist.repeat = self.playlist.repeat.cycle();
+        self.config.repeat = self.playlist.repeat;
+        self.mark_config_dirty(ctx);
+        self.show_osd(ctx, self.playlist.repeat.label().into(), false);
     }
 
     fn handle_playlist_action(&mut self, ctx: &egui::Context, action: PlaylistAction) {
@@ -288,17 +321,7 @@ impl RvpApp {
                 }
             }
             PlaylistAction::Move { from, to } => self.playlist.move_item(from, to),
-            PlaylistAction::CycleRepeat => {
-                self.playlist.repeat = self.playlist.repeat.cycle();
-                self.config.repeat = self.playlist.repeat;
-                self.mark_config_dirty(ctx);
-                let text = match self.playlist.repeat {
-                    Repeat::Off => "リピート: オフ",
-                    Repeat::All => "リピート: 全体",
-                    Repeat::One => "リピート: 1 本",
-                };
-                self.show_osd(ctx, text.into(), false);
-            }
+            PlaylistAction::CycleRepeat => self.cycle_repeat(ctx),
             PlaylistAction::ToggleShuffle => {
                 let on = !self.playlist.shuffle();
                 self.playlist.set_shuffle(on);
@@ -360,8 +383,14 @@ impl RvpApp {
             if let Some(dir) = start_dir {
                 dialog = dialog.set_directory(dir);
             }
+            if matches!(kind, DialogKind::OpenFolder) {
+                let picked = dialog.set_title("フォルダを開く").pick_folders();
+                let _ = tx.send(picked.map(|paths| DialogResult { paths, kind }));
+                ctx.request_repaint();
+                return;
+            }
             dialog = match kind {
-                DialogKind::Open | DialogKind::Append => dialog
+                DialogKind::Open | DialogKind::OpenFolder | DialogKind::Append => dialog
                     .set_title(if matches!(kind, DialogKind::Append) { "プレイリストに追加" } else { "動画を開く" })
                     .add_filter("動画", VIDEO_EXTENSIONS),
                 DialogKind::Subtitle => dialog.set_title("字幕ファイルを読み込む").add_filter("字幕", SUBTITLE_EXTENSIONS),
@@ -525,31 +554,54 @@ impl RvpApp {
                 && !r.paths.is_empty()
             {
                 match r.kind {
-                    DialogKind::Open => self.open_paths(ctx, r.paths, false),
+                    DialogKind::Open | DialogKind::OpenFolder => self.open_paths(ctx, r.paths, false),
                     DialogKind::Append => self.open_paths(ctx, r.paths, true),
                     DialogKind::Subtitle => self.load_subtitles(ctx, r.paths),
                 }
             }
         }
 
-        // Drag & drop: replaces the playlist, or appends while the panel is open.
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        // Subtitle files attach to the current video; everything else goes to the playlist.
-        let (subs, media): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| is_subtitle_file(p));
-        if !subs.is_empty() {
-            self.load_subtitles(ctx, subs);
+        // Drag & drop: winit (X11) and our Wayland listener.
+        let mut dropped: Vec<PathBuf> =
+            ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            self.drag_hover = true;
+        } else if self.dnd_rx.is_none() {
+            self.drag_hover = false;
         }
-        if !media.is_empty() {
-            self.open_paths(ctx, media, self.show_playlist);
+        if let Some(rx) = &self.dnd_rx {
+            for ev in rx.try_iter() {
+                match ev {
+                    crate::wayland_dnd::DndEvent::Hover(h) => self.drag_hover = h,
+                    crate::wayland_dnd::DndEvent::Drop(paths) => dropped.extend(paths),
+                }
+            }
+        }
+        if !dropped.is_empty() {
+            self.drag_hover = false;
+            self.handle_dropped(ctx, dropped);
         }
 
-        let (now, moved) = ctx.input(|i| (i.time, i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_down()));
-        if moved {
+        // Activity = pointer motion or any discrete input. (Not `any_down()`: a
+        // compositor move grab can leave a button stuck "down" in egui.)
+        let (now, active) = ctx.input(|i| {
+            let discrete = i.raw.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton { .. } | egui::Event::Key { .. } | egui::Event::MouseWheel { .. }
+                )
+            });
+            (i.time, i.pointer.delta() != egui::Vec2::ZERO || discrete)
+        });
+        if active {
             self.last_activity = now;
         }
 
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
 
+        if key(Modifiers::SHIFT, Key::O) {
+            self.open_dialog(ctx, DialogKind::OpenFolder);
+        }
         if key(Modifiers::NONE, Key::O) {
             self.open_dialog(ctx, DialogKind::Open);
         }
@@ -582,6 +634,9 @@ impl RvpApp {
         }
         if key(Modifiers::NONE, Key::Escape) && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+        }
+        if key(Modifiers::NONE, Key::L) {
+            self.cycle_repeat(ctx);
         }
         if key(Modifiers::NONE, Key::P) {
             self.show_playlist = !self.show_playlist;
@@ -637,6 +692,52 @@ impl RvpApp {
         }
     }
 
+    /// Resizes the window to the video's aspect ratio so there are no bars:
+    /// when a file opens, and after the user finishes resizing (size stable
+    /// for a moment). Only the height changes, unless that would overflow the
+    /// monitor.
+    fn fit_window_to_video(&mut self, ctx: &egui::Context, size: egui::Vec2, now: f64) {
+        const SETTLE: f64 = 0.35;
+        if size != self.fit_size {
+            self.fit_size = size;
+            self.fit_changed_at = now;
+        }
+        let aspect = self.video_aspect;
+        if !(aspect.is_finite() && aspect > 0.0) || self.fit_done == Some((size, aspect)) {
+            return;
+        }
+        let waited = now - self.fit_changed_at;
+        if waited < SETTLE {
+            ctx.request_repaint_after(Duration::from_secs_f64(SETTLE - waited + 0.01));
+            return;
+        }
+        self.fit_done = Some((size, aspect));
+        let fitted = window::fit_rect(Rect::from_min_size(egui::Pos2::ZERO, size), aspect);
+        if size.x - fitted.width() < 2.0 && size.y - fitted.height() < 2.0 {
+            return; // already (almost) exact
+        }
+        let mut target = egui::vec2(size.x, (size.x / aspect).round());
+        if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+            let max_h = monitor.y * 0.9;
+            if target.y > max_h {
+                target = egui::vec2((max_h * aspect).round(), max_h.round());
+            }
+        }
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(target));
+    }
+
+    /// Subtitle files attach to the current video; everything else replaces the
+    /// playlist (or is appended while the playlist panel is open).
+    fn handle_dropped(&mut self, ctx: &egui::Context, dropped: Vec<PathBuf>) {
+        let (subs, media): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| is_subtitle_file(p));
+        if !subs.is_empty() {
+            self.load_subtitles(ctx, subs);
+        }
+        if !media.is_empty() {
+            self.open_paths(ctx, media, self.show_playlist);
+        }
+    }
+
     fn update_video(&mut self, ctx: &egui::Context) {
         let Some(p) = self.player.as_mut() else { return };
         if let Some(frame) = p.update() {
@@ -673,28 +774,40 @@ impl RvpApp {
             color::TEXT,
         );
 
-        let btn_rect = Rect::from_center_size(center + vec2(0.0, 74.0), vec2(176.0, 38.0));
-        let resp = ui.interact(btn_rect, Id::new("empty_open"), Sense::click());
-        let fill = if resp.hovered() { color::ACCENT_HOVER } else { color::ACCENT };
+        // Primary: open file(s). Secondary (outlined): open a folder.
+        let buttons = [
+            (-94.0, icon::FILE_VIDEO, "ファイルを開く", DialogKind::Open, true),
+            (94.0, icon::FOLDER_OPEN, "フォルダを開く", DialogKind::OpenFolder, false),
+        ];
+        for (dx, glyph, label, kind, primary) in buttons {
+            let btn_rect = Rect::from_center_size(center + vec2(dx, 74.0), vec2(176.0, 38.0));
+            let resp = ui.interact(btn_rect, Id::new(("empty_open", label)), Sense::click());
+            let radius = CornerRadius::same(size::BUTTON_RADIUS + 2);
+            let p = ui.painter();
+            let text_color = if primary {
+                let fill = if resp.hovered() { color::ACCENT_HOVER } else { color::ACCENT };
+                p.rect_filled(btn_rect, radius, fill);
+                Color32::from_rgb(0x10, 0x12, 0x1a)
+            } else {
+                if resp.hovered() {
+                    p.rect_filled(btn_rect, radius, color::SURFACE_HOVER);
+                }
+                p.rect_stroke(btn_rect, radius, egui::Stroke::new(1.0, color::ACCENT), egui::StrokeKind::Inside);
+                color::ACCENT
+            };
+            p.text(btn_rect.center(), Align2::CENTER_CENTER, format!("{glyph}  {label}"), FontId::proportional(15.0), text_color);
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                self.open_dialog(ui.ctx(), kind);
+            }
+        }
         let p = ui.painter();
-        p.rect_filled(btn_rect, CornerRadius::same(size::BUTTON_RADIUS + 2), fill);
-        p.text(
-            btn_rect.center(),
-            Align2::CENTER_CENTER,
-            format!("{}  ファイルを開く", icon::FOLDER_OPEN),
-            FontId::proportional(15.0),
-            Color32::from_rgb(0x10, 0x12, 0x1a),
-        );
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            self.open_dialog(ui.ctx(), DialogKind::Open);
-        }
         p.text(
             center + vec2(0.0, 112.0),
             Align2::CENTER_CENTER,
-            "O キーでも開けます",
+            "O でファイル、Shift+O でフォルダを開けます",
             FontId::proportional(12.5),
             color::TEXT_DIM,
         );
@@ -756,6 +869,18 @@ impl eframe::App for RvpApp {
         [0.0; 4] // fully transparent: the rounded window shape is painted by us
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if std::mem::take(&mut self.inject_release) {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            raw_input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: ctx.input(|i| i.modifiers),
+            });
+        }
+    }
+
     fn on_exit(&mut self) {
         self.remember_position();
         self.resume.save();
@@ -779,6 +904,10 @@ impl eframe::App for RvpApp {
         let radius = if fullscreen || maximized { 0 } else { size::WINDOW_RADIUS };
         let window_radius = CornerRadius::same(radius);
 
+        if !fullscreen && !maximized && self.player.is_some() {
+            self.fit_window_to_video(&ctx, window.size(), now);
+        }
+
         // Window body.
         ui.painter().rect_filled(window, window_radius, color::BG);
 
@@ -788,6 +917,7 @@ impl eframe::App for RvpApp {
             Self::toggle_fullscreen(&ctx);
         } else if bg.drag_started() && !fullscreen {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            self.inject_release = true;
         }
         // Mouse wheel over the video adjusts volume (one notch ≈ 5%).
         if bg.hovered() && self.player.is_some() {
@@ -811,15 +941,14 @@ impl eframe::App for RvpApp {
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
         let bar = controls::bar_rect(window);
         let panel = playlist_panel::panel_rect(window);
-        let over_chrome = hover_pos.is_some_and(|p| {
-            bar.expand(8.0).contains(p)
-                || p.y < window.top() + size::TITLEBAR_HEIGHT
-                || (self.show_playlist && panel.contains(p))
-        });
-        let playing = self.player.as_ref().is_some_and(|p| p.state() == PlayState::Playing);
+        // Hide after a short idle period (playing or paused), unless the pointer
+        // rests on the controls, a menu is open, or nothing is loaded.
+        let over_chrome =
+            hover_pos.is_some_and(|p| bar.expand(8.0).contains(p) || (self.show_playlist && panel.contains(p)));
+        let keep = self.player.is_none() || over_chrome || egui::Popup::is_any_open(&ctx);
         let idle = now - self.last_activity;
-        let visible = !playing || over_chrome || idle < motion::HIDE_AFTER;
-        if visible && playing && !over_chrome {
+        let visible = keep || idle < motion::HIDE_AFTER;
+        if visible && !keep {
             ctx.request_repaint_after(Duration::from_secs_f64(motion::HIDE_AFTER - idle + 0.01));
         }
         let alpha = ctx.animate_bool_with_time(Id::new("chrome"), visible, motion::FADE);
@@ -832,9 +961,12 @@ impl eframe::App for RvpApp {
         }
 
         let title = self.player.as_ref().map_or("rvp", |p| p.info().title.as_str()).to_owned();
-        let tb = window::title_bar(ui, window, &title, alpha, fullscreen);
+        let tb = window::title_bar(ui, window, &title, alpha, fullscreen, f32::from(radius));
         if tb.open {
             self.open_dialog(&ctx, DialogKind::Open);
+        }
+        if tb.open_folder {
+            self.open_dialog(&ctx, DialogKind::OpenFolder);
         }
 
         // Subtitles sit above the video, below the chrome; they move up while the bar is shown.
@@ -857,6 +989,7 @@ impl eframe::App for RvpApp {
                 playlist_open: self.show_playlist,
                 speed: self.speed,
                 tracks: Self::tracks_model(p),
+                repeat: self.playlist.repeat,
             };
             let a = controls::control_bar(ui, window, &model, alpha);
             if let Some(p) = self.player.as_mut() {
@@ -892,6 +1025,9 @@ impl eframe::App for RvpApp {
             if let Some(t) = a.tracks {
                 self.handle_tracks_action(&ctx, t);
             }
+            if a.cycle_repeat {
+                self.cycle_repeat(&ctx);
+            }
         }
 
         let panel_alpha = ctx.animate_bool_with_time(Id::new("playlist_panel"), self.show_playlist, motion::FADE);
@@ -910,8 +1046,15 @@ impl eframe::App for RvpApp {
 
         self.paint_osd(ui, window);
 
+        let drop_alpha = ctx.animate_bool_with_time(Id::new("drop_hint"), self.drag_hover, motion::FADE);
+        if drop_alpha > 0.0 {
+            paint_drop_hint(ui, window, f32::from(radius), drop_alpha, self.show_playlist);
+        }
+
         if !fullscreen && !maximized {
-            window::resize_grips(ui, window);
+            if window::resize_grips(ui, window) {
+                self.inject_release = true;
+            }
         }
 
         if let Some(shot) = &mut self.debug_shot {
@@ -945,4 +1088,38 @@ fn paint_subtitle(ui: &egui::Ui, text: &str, video: Rect, window: Rect, bar: Rec
         p.galley_with_override_text_color(pos + vec2(dx, dy) * outline, galley.clone(), shadow);
     }
     p.galley(pos, galley, Color32::WHITE);
+}
+
+/// Hooks up Wayland drag-and-drop when running on Wayland.
+fn start_wayland_dnd(cc: &eframe::CreationContext<'_>) -> Option<Receiver<crate::wayland_dnd::DndEvent>> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    let handle = cc.display_handle().ok()?;
+    let RawDisplayHandle::Wayland(wl) = handle.as_raw() else { return None };
+    let (tx, rx) = unbounded();
+    // SAFETY: the display belongs to the main window, which lives as long as the app.
+    match unsafe { crate::wayland_dnd::start(wl.display, tx, cc.egui_ctx.clone()) } {
+        Ok(()) => Some(rx),
+        Err(e) => {
+            log::warn!("wayland drag-and-drop unavailable: {e:#}");
+            None
+        }
+    }
+}
+
+/// Overlay shown while files are dragged over the window.
+fn paint_drop_hint(ui: &egui::Ui, window: Rect, radius: f32, alpha: f32, append: bool) {
+    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("drop_hint_layer")));
+    let r = CornerRadius::same(radius as u8);
+    p.rect_filled(window, r, Color32::from_black_alpha((150.0 * alpha) as u8));
+    let inner = window.shrink(14.0);
+    p.rect_stroke(
+        inner,
+        CornerRadius::same(size::PANEL_RADIUS),
+        egui::Stroke::new(2.0, color::ACCENT.gamma_multiply(alpha)),
+        egui::StrokeKind::Inside,
+    );
+    let c = window.center();
+    p.text(c - vec2(0.0, 22.0), Align2::CENTER_CENTER, icon::DOWNLOAD_SIMPLE, icon_font(42.0), color::ACCENT.gamma_multiply(alpha));
+    let label = if append { "ドロップしてプレイリストに追加" } else { "ドロップして再生" };
+    p.text(c + vec2(0.0, 26.0), Align2::CENTER_CENTER, label, FontId::proportional(18.0), color::TEXT.gamma_multiply(alpha));
 }

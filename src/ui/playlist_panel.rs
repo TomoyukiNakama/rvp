@@ -40,7 +40,7 @@ pub fn panel_rect(window: Rect) -> Rect {
 }
 
 /// Toggle button whose icon is tinted with the accent colour when `on`.
-fn toggle_icon(ui: &mut Ui, glyph: &str, tip: &str, on: bool) -> egui::Response {
+pub fn toggle_icon(ui: &mut Ui, glyph: &str, tip: &str, on: bool) -> egui::Response {
     let resp = icon_button_ex(ui, "", tip, size::ICON_SIZE, None);
     let c = if on { color::ACCENT } else { color::TEXT_DIM };
     ui.painter().text(resp.rect.center(), Align2::CENTER_CENTER, glyph, icon_font(size::ICON_SIZE - 2.0), c);
@@ -83,11 +83,8 @@ pub fn playlist_panel(ui: &mut Ui, window: Rect, m: &PlaylistModel<'_>, alpha: f
                     if icon_button(ui, icon::PLUS, "ファイルを追加").clicked() {
                         actions.push(PlaylistAction::Add);
                     }
-                    let (rep_icon, rep_tip) = match m.repeat {
-                        Repeat::Off => (icon::REPEAT, "リピート: オフ"),
-                        Repeat::All => (icon::REPEAT, "リピート: 全体"),
-                        Repeat::One => (icon::REPEAT_ONCE, "リピート: 1 本"),
-                    };
+                    let rep_icon = if m.repeat == Repeat::One { icon::REPEAT_ONCE } else { icon::REPEAT };
+                    let rep_tip = m.repeat.label();
                     if toggle_icon(ui, rep_icon, rep_tip, m.repeat != Repeat::Off).clicked() {
                         actions.push(PlaylistAction::CycleRepeat);
                     }

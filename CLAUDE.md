@@ -58,6 +58,18 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   Translucent colors must use `from_rgba_unmultiplied_const` (premultiplied with rgb > a renders as additive white).
 - `fonts.rs` — CJK font via `fc-match`, Phosphor icon font (`ui::widgets::icon_font`).
 
+## Windowing gotchas (Wayland)
+- winit 0.30 has no Wayland drag-and-drop: `wayland_dnd.rs` joins winit's `wl_display` (`Backend::from_foreign_display`)
+  with its own queue/thread and `wl_data_device`, reads `text/uri-list` on drop. X11 drops still come via egui.
+  Forcing X11 instead is not an option on NVIDIA: the X11 Vulkan surface has no transparent alpha mode (no rounded corners).
+- `StartDrag`/`BeginResize` hand the pointer to the compositor, which swallows the button release; `raw_input_hook`
+  injects a release next frame (`inject_release`), otherwise egui keeps the drag "active" and the next drag fails.
+- Anything painted at the window edges must respect the rounded corners (e.g. `window::rounded_top_gradient`).
+- Window follows the video aspect (`fit_window_to_video`): on open and after a manual resize settles (0.35 s), the
+  height is snapped via `ViewportCommand::InnerSize` (capped at 90% of the monitor). Not while maximized/fullscreen.
+- Auto-hide is purely idle-based (pointer motion / button / key / wheel events), playing or paused; kept visible
+  while hovering the control bar or playlist panel, while a popup is open, or with no file loaded.
+
 ## Conventions
 - UI strings are Japanese.
 - Window is borderless + transparent; the rounded window body is painted by us (`clear_color` is transparent). Corner radius is 0 when maximized/fullscreen.

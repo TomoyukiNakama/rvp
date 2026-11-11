@@ -47,8 +47,9 @@ pub struct Config {
     pub muted: bool,
     pub repeat: Repeat,
     pub shuffle: bool,
-    /// Opening a single file queues the other videos in its folder.
-    pub playlist_from_folder: bool,
+    /// Opening a single *file* also queues the other videos in its folder.
+    /// (Opening a *folder* always plays all of its videos.)
+    pub queue_siblings: bool,
     /// Resume files where they were left off.
     pub resume: bool,
     /// Seek step for ←/→ and Shift+←/→ in seconds.
@@ -65,7 +66,7 @@ impl Default for Config {
             muted: false,
             repeat: Repeat::Off,
             shuffle: false,
-            playlist_from_folder: true,
+            queue_siblings: false,
             resume: true,
             seek_small: 5.0,
             seek_large: 60.0,

@@ -18,9 +18,12 @@ env_logger = "0.11.11"
 ffmpeg-next = "9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.35"
+raw-window-handle = "0.6"
 rfd = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
 
 # Keep debug builds fast enough for real-time video.
 [profile.dev]

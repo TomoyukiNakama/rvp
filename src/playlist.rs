@@ -25,11 +25,20 @@ pub enum Repeat {
 }
 
 impl Repeat {
+    /// Off → this video → whole playlist → off.
     pub fn cycle(self) -> Self {
         match self {
-            Repeat::Off => Repeat::All,
-            Repeat::All => Repeat::One,
-            Repeat::One => Repeat::Off,
+            Repeat::Off => Repeat::One,
+            Repeat::One => Repeat::All,
+            Repeat::All => Repeat::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Repeat::Off => "ループ: オフ",
+            Repeat::One => "ループ: この動画",
+            Repeat::All => "ループ: プレイリスト全体",
         }
     }
 }
