@@ -6,6 +6,7 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Build / run: `cargo build`, `cargo run -- <video>` (dev profile is optimized enough for real-time playback)
 - Test: `cargo test` (player integration test generates a clip via the `ffmpeg` CLI; skips if missing)
 - Test media: `scripts/gen-test-media.sh` → `target/test-media/`
+- README screenshots: `scripts/gen-readme-shots.sh` → `docs/images/{en,ja}-*.webp` (README.md = English, README.ja.md = Japanese; keep both in sync)
 - After changing dependencies: `python3 scripts/gen-licenses.py` (regenerates `licenses/third-party.toml`; `--check` verifies)
 - `cargo test` does **not** rebuild `target/debug/rvp`; run `cargo build` before launching the app.
 - Keep manual runs out of the real config/state: `XDG_CONFIG_HOME=$TMPDIR/xdg/config XDG_STATE_HOME=$TMPDIR/xdg/state`.

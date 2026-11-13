@@ -1,89 +1,147 @@
 # rvp
 
-Rust と egui で作った、Linux 向けの動画プレイヤーです。
+**English** | [日本語](README.ja.md)
 
-- 枠なしで角丸のダークテーマのウィンドウ。コントロールは操作しないと自動で隠れる
-- FFmpeg でデコードし、YUV から RGB への変換は GPU（wgpu のシェーダ）で行う。BT.601/709/2020、10bit に対応
-- ハードウェアデコード（CUDA / VAAPI）。使えない場合はソフトウェアに自動で切り替える
-- 音声を基準にした同期、音量 0〜150%、ピッチを保った再生速度変更（0.25〜4 倍）
-- プレイリスト（同じフォルダの動画から自動で作成、リピート、シャッフル、ドラッグでの並べ替え）
-- 前回の位置からの再開
-- 字幕：SRT / ASS / WebVTT（外部ファイルと埋め込み）。Shift_JIS にも対応。音声トラックと字幕トラックの切り替え
+A video player for Linux, built with Rust and [egui](https://github.com/emilk/egui).
 
-## 必要なもの
+![rvp playing a video with subtitles](docs/images/en-player.webp)
 
-- Rust（stable、edition 2024）
-- FFmpeg 8 の開発ライブラリ（`libavcodec-dev`、`libavformat-dev`、`libavfilter-dev`、`libswscale-dev`、`libswresample-dev`）
-- ALSA の開発ライブラリ（`libasound2-dev`）。PipeWire や PulseAudio の環境でも ALSA 経由で音が出る
-- 表示用のフォントは fontconfig で言語ごとに選ぶ。日本語・中国語・韓国語には CJK フォント（例：Noto Sans CJK）が必要
+## Features
 
-## 使い方
+### Clean, borderless player
+
+- Borderless, rounded dark window. The title bar and controls fade out when you stop moving the mouse
+- Decoding with FFmpeg; Y'CbCr → RGB conversion on the GPU (wgpu shader). BT.601 / 709 / 2020, 8- and 10-bit
+- Hardware decoding (CUDA / VAAPI), with automatic fallback to software decoding
+- Audio-clocked A/V sync, volume 0–150 %, resume from where you left off
+- Drop files or folders onto the window to play them (Wayland and X11)
+
+### Subtitles and tracks
+
+Switch subtitle and audio tracks from the menu or with `S` / `A`. SRT / ASS / WebVTT, both embedded and external files
+(Shift_JIS is detected too). Subtitle timing can be shifted in 0.1 s steps.
+
+![Subtitle and audio track menu](docs/images/en-tracks.webp)
+
+### Playlist
+
+Open a folder to play all of its videos. Repeat (one / all), shuffle, drag to reorder, and save as M3U8.
+
+![Playlist panel](docs/images/en-playlist.webp)
+
+### Playback speed
+
+0.25× – 4× with pitch-preserving audio.
+
+![Playback speed menu](docs/images/en-speed.webp)
+
+### 14 languages
+
+The UI language follows your OS locale on first start and can be changed at any time from the title bar —
+English, Japanese, German, Spanish, French, Italian, Polish, Portuguese (Brazil), Russian, Indonesian, Vietnamese,
+Korean and Chinese (Simplified / Traditional). See [Translations](#translations) to add or improve one.
+
+![Language menu](docs/images/en-language.webp)
+
+### Licence information
+
+**About rvp** (ⓘ in the title bar, or F1) shows rvp's licence and every third-party component with its full licence text.
+
+![About dialog](docs/images/en-about.webp)
+
+## Requirements
+
+- Rust (stable, edition 2024)
+- FFmpeg 8 development libraries (`libavcodec-dev`, `libavformat-dev`, `libavfilter-dev`, `libswscale-dev`, `libswresample-dev`)
+- ALSA development library (`libasound2-dev`). Sound also works on PipeWire / PulseAudio through ALSA
+- Fonts are chosen per language with fontconfig. Japanese, Chinese and Korean need a CJK font (e.g. Noto Sans CJK)
+
+## Usage
 
 ```bash
-cargo run --release -- 動画.mkv [動画2.mp4 ...]
+cargo run --release -- video.mkv [video2.mp4 ...]
 ```
 
-ファイルを開くとそのファイルだけ、フォルダを開くと中の動画をすべて再生します。ファイルやフォルダはウィンドウにドロップしても開けます（Wayland / X11 の両方に対応）。字幕ファイルをドロップすると、再生中の動画の字幕として読み込みます。
+Opening a file plays just that file; opening a folder plays every video in it. Dropping a subtitle file onto the
+window loads it for the current video.
 
-## キー操作
+![Start screen](docs/images/en-empty.webp)
 
-| キー | 動作 |
+## Keyboard shortcuts
+
+| Key | Action |
 |---|---|
-| Space | 再生 / 一時停止 |
-| ← / →、Shift + ← / → | 5 秒 / 60 秒シーク |
-| ↑ / ↓、ホイール | 音量 |
-| M | ミュート |
-| `[` / `]`、Backspace | 再生速度を下げる / 上げる、等速に戻す |
-| N / B | 次 / 前の項目 |
-| L | ループ（オフ → この動画 → プレイリスト全体） |
-| P | プレイリスト |
-| V / S / A | 字幕の表示切り替え / 字幕トラック / 音声トラック |
-| Z / X | 字幕を 0.1 秒早める / 遅らせる |
-| F、ダブルクリック、Esc | フルスクリーン / 解除 |
-| F1 | rvp について（ライセンスと使用しているソフトウェア） |
-| O / Shift+O | ファイルを開く / フォルダを開く |
-| I | メディア情報 |
-| Ctrl+H | ハードウェアデコードの切り替え |
-| Q | 終了 |
+| Space | Play / pause |
+| ← / →, Shift + ← / → | Seek 5 s / 60 s |
+| ↑ / ↓, mouse wheel | Volume |
+| M | Mute |
+| `[` / `]`, Backspace | Slower / faster, reset to 1× |
+| N / B | Next / previous item |
+| L | Loop (off → this video → whole playlist) |
+| P | Playlist |
+| V / S / A | Show/hide subtitles / next subtitle track / next audio track |
+| Z / X | Subtitles 0.1 s earlier / later |
+| F, double-click, Esc | Full screen / exit full screen |
+| F1 | About rvp (licences and third-party software) |
+| O / Shift+O | Open file / open folder |
+| Ctrl+S | Save playlist |
+| I | Media info |
+| Ctrl+H | Toggle hardware decoding |
+| Q | Quit |
 
-## 設定
+## Configuration
 
-`~/.config/rvp/config.toml`（アプリが自動で書き込みます。手で編集してもかまいません）
+`~/.config/rvp/config.toml` — written by the app; you can also edit it by hand (missing keys use the defaults).
 
 ```toml
-volume = 1.0              # 0.0〜1.5
+volume = 1.0              # 0.0–1.5
 muted = false
 repeat = "off"            # off / all / one
 shuffle = false
-queue_siblings = false    # true: ファイルを開くと同じフォルダの動画も続けて再生
+queue_siblings = false    # true: opening a file also queues the other videos in its folder
 resume = true
 seek_small = 5.0
 seek_large = 60.0
 hwdec = "auto"            # auto / off / cuda / vaapi
+language = "en"           # UI language; detected from the OS locale on first start
 ```
 
-再生位置は `~/.local/state/rvp/resume.toml` に保存されます。
+Playback positions are stored in `~/.local/state/rvp/resume.toml`.
 
-## 開発
+## Translations
+
+UI strings live in [Project Fluent](https://projectfluent.org/) files under [`locales/`](locales) (`en.ftl` is the
+reference). To fix or add a translation without rebuilding, put a `<language tag>.ftl` file into
+`~/.config/rvp/locales/` — it overrides the built-in messages (a partial file is fine) or adds a new language to the
+menu (name it with `language-name = …`). rvp reloads these files while it is running.
+
+Pull requests for `locales/*.ftl` are welcome; `cargo test` checks that every file has the same messages and
+variables as `en.ftl`. Scripts that need complex text shaping or right-to-left layout (Thai, Indic scripts, Arabic…)
+are not supported by egui yet.
+
+## Development
 
 ```bash
-cargo test                    # 単体テストと統合テスト（ffmpeg CLI でテスト動画を作る）
-scripts/gen-test-media.sh     # 手動確認用のテスト動画を target/test-media/ に作る
+cargo test                       # unit and integration tests (the ffmpeg CLI generates a test clip)
+scripts/gen-test-media.sh        # test clips for manual checks → target/test-media/
+scripts/gen-readme-shots.sh      # regenerate the README screenshots → docs/images/
 ```
 
-依存クレートを変えたら、ライセンス一覧（`licenses/third-party.toml`）を作り直してください。
+After changing dependencies, regenerate the licence list (`licenses/third-party.toml`):
 
 ```bash
-python3 scripts/gen-licenses.py           # 再生成
-python3 scripts/gen-licenses.py --check   # 最新かどうかの確認
+python3 scripts/gen-licenses.py           # regenerate
+python3 scripts/gen-licenses.py --check   # verify it is up to date
 ```
 
-仕様は `SPEC.md`、開発メモは `CLAUDE.md` を参照してください。
+The specification is in `SPEC.md` and development notes are in `CLAUDE.md` (both partly in Japanese).
 
-## ライセンス
+## Licence
 
-rvp は [GNU General Public License v3.0](LICENSE)（またはそれ以降のバージョン）で配布します。
-システムの FFmpeg（GPL ビルド）を動的リンクするため GPL にしています。
+Copyright (C) 2026 Tomoyuki Nakama
 
-使用しているソフトウェアとそのライセンスの一覧は、アプリの「rvp について」（タイトルバーの ⓘ ボタンか F1）で確認できます。
-クレートのライセンス本文は `licenses/third-party.toml` にあります。
+rvp is distributed under the [GNU General Public License v3.0](LICENSE) or (at your option) any later version.
+It is GPL because it dynamically links the system FFmpeg (a GPL build).
+
+The third-party software rvp uses and its licences are listed in the app's **About rvp** dialog;
+the crate licence texts are in `licenses/third-party.toml`.
