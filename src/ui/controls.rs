@@ -72,20 +72,20 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel<'_>, alpha: f32)
             ui.spacing_mut().item_spacing.x = 6.0;
 
             let (play_icon, tip) = match m.state {
-                PlayState::Playing => (icon::PAUSE, "一時停止 (Space)"),
-                PlayState::Paused => (icon::PLAY, "再生 (Space)"),
-                PlayState::Ended => (icon::ARROW_COUNTER_CLOCKWISE, "最初から再生 (Space)"),
+                PlayState::Playing => (icon::PAUSE, t!("controls-pause")),
+                PlayState::Paused => (icon::PLAY, t!("controls-play")),
+                PlayState::Ended => (icon::ARROW_COUNTER_CLOCKWISE, t!("controls-replay")),
             };
             ui.add_enabled_ui(m.has_prev, |ui| {
-                if icon_button(ui, icon::SKIP_BACK, "前へ (B)").clicked() {
+                if icon_button(ui, icon::SKIP_BACK, &t!("controls-prev")).clicked() {
                     a.prev = true;
                 }
             });
-            if icon_button_ex(ui, play_icon, tip, size::ICON_SIZE + 2.0, None).clicked() {
+            if icon_button_ex(ui, play_icon, &tip, size::ICON_SIZE + 2.0, None).clicked() {
                 a.toggle_pause = true;
             }
             ui.add_enabled_ui(m.has_next, |ui| {
-                if icon_button(ui, icon::SKIP_FORWARD, "次へ (N)").clicked() {
+                if icon_button(ui, icon::SKIP_FORWARD, &t!("controls-next")).clicked() {
                     a.next = true;
                 }
             });
@@ -96,11 +96,11 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel<'_>, alpha: f32)
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (fs_icon, tip) = if m.fullscreen {
-                    (icon::CORNERS_IN, "フルスクリーン解除 (F)")
+                    (icon::CORNERS_IN, t!("controls-exit-fullscreen"))
                 } else {
-                    (icon::CORNERS_OUT, "フルスクリーン (F)")
+                    (icon::CORNERS_OUT, t!("controls-fullscreen"))
                 };
-                if icon_button(ui, fs_icon, tip).clicked() {
+                if icon_button(ui, fs_icon, &tip).clicked() {
                     a.toggle_fullscreen = true;
                 }
                 let looping = m.repeat != crate::playlist::Repeat::Off;
@@ -113,7 +113,7 @@ pub fn control_bar(ui: &mut Ui, window: Rect, m: &ControlsModel<'_>, alpha: f32)
                 let pl = icon_button_ex(
                     ui,
                     icon::QUEUE,
-                    "プレイリスト (P)",
+                    &t!("controls-playlist"),
                     size::ICON_SIZE,
                     m.playlist_open.then_some(color::SURFACE_ACTIVE),
                 );

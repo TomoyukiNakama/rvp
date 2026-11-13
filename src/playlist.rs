@@ -1,4 +1,5 @@
-//! Playlist model: ordering, next/previous with repeat & shuffle, folder expansion.
+//! Playlist model: ordering, next/previous with repeat & shuffle, folder expansion,
+//! M3U / M3U8 reading and writing.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,14 @@ pub fn is_video(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| VIDEO_EXTENSIONS.iter().any(|v| v.eq_ignore_ascii_case(e)))
+}
+
+pub const PLAYLIST_EXTENSIONS: &[&str] = &["m3u8", "m3u"];
+
+pub fn is_playlist_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| PLAYLIST_EXTENSIONS.iter().any(|v| v.eq_ignore_ascii_case(e)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -34,12 +43,12 @@ impl Repeat {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Repeat::Off => "ループ: オフ",
-            Repeat::One => "ループ: この動画",
-            Repeat::All => "ループ: プレイリスト全体",
-        }
+    pub fn label(self) -> String {
+        t!(match self {
+            Repeat::Off => "repeat-off",
+            Repeat::One => "repeat-one",
+            Repeat::All => "repeat-all",
+        })
     }
 }
 
@@ -104,12 +113,28 @@ pub fn videos_in(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// Expands dropped/opened paths: directories become their videos.
+/// Expands dropped/opened paths: directories become their videos, M3U / M3U8
+/// playlists their entries (nested playlists are ignored).
 pub fn expand(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in paths {
         if p.is_dir() {
             out.extend(videos_in(&p));
+        } else if is_playlist_file(&p) {
+            match load_m3u(&p) {
+                Ok(Some(entries)) => {
+                    for e in entries {
+                        if e.is_dir() {
+                            out.extend(videos_in(&e));
+                        } else if !is_playlist_file(&e) {
+                            out.push(e);
+                        }
+                    }
+                }
+                // HLS manifest: a stream for FFmpeg, not a list of files.
+                Ok(None) => out.push(p),
+                Err(e) => log::warn!("cannot read playlist {}: {e}", p.display()),
+            }
         } else {
             out.push(p);
         }
@@ -117,10 +142,86 @@ pub fn expand(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     out
 }
 
+// ---- M3U / M3U8 ------------------------------------------------------------------
+
+fn percent_decode(s: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let b = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let (Some(h), Some(l)) = (b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex))
+        {
+            out.push(h << 4 | l);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+/// Entries of an M3U playlist. Comment / `#EXT` lines are skipped, relative
+/// paths resolve against `base` (the playlist's folder), `file://` URIs are
+/// decoded and other URLs dropped (no streaming support).
+pub fn parse_m3u(text: &str, base: &Path) -> Vec<PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let p = if let Some(rest) = l.strip_prefix("file://") {
+                percent_decode(rest.strip_prefix("localhost").unwrap_or(rest))
+            } else if l.contains("://") {
+                return None;
+            } else {
+                PathBuf::from(l)
+            };
+            Some(if p.is_absolute() { p } else { base.join(p) })
+        })
+        .collect()
+}
+
+/// Reads a playlist file (UTF-8, BOM or Shift_JIS). `None` for an HLS manifest.
+pub fn load_m3u(path: &Path) -> std::io::Result<Option<Vec<PathBuf>>> {
+    let text = crate::player::decode_text(&std::fs::read(path)?);
+    if text.lines().any(|l| l.trim_start().starts_with("#EXT-X-")) {
+        return Ok(None);
+    }
+    let base = std::path::absolute(path)?.parent().map(Path::to_path_buf).unwrap_or_default();
+    Ok(Some(parse_m3u(&text, &base)))
+}
+
+/// Playlist text for `items`, saved in `dir`: entries inside `dir` are written
+/// relative to it (the folder stays movable), everything else absolute.
+pub fn format_m3u(items: &[PathBuf], dir: &Path) -> String {
+    let mut out = String::from("#EXTM3U\n");
+    for item in items {
+        let abs = std::path::absolute(item).unwrap_or_else(|_| item.clone());
+        let entry = abs.strip_prefix(dir).unwrap_or(&abs).to_string_lossy();
+        if entry.starts_with('#') {
+            out.push_str("./"); // would read back as a comment
+        }
+        out.push_str(&entry);
+        out.push('\n');
+    }
+    out
+}
+
+/// Writes `items` as an (extended, UTF-8) M3U playlist.
+pub fn write_m3u(path: &Path, items: &[PathBuf]) -> std::io::Result<()> {
+    let dir = std::path::absolute(path)?.parent().map(Path::to_path_buf).unwrap_or_default();
+    std::fs::write(path, format_m3u(items, &dir))
+}
+
 impl Playlist {
     /// Replaces the contents. A single file with `with_siblings` becomes its
     /// folder's videos, positioned at that file.
     pub fn set(&mut self, paths: Vec<PathBuf>, with_siblings: bool) {
+        // A playlist file with one entry is still an explicit list.
+        let with_siblings = with_siblings && !paths.iter().any(|p| is_playlist_file(p));
         let paths = expand(paths);
         let (items, current) = match paths.as_slice() {
             [single] if with_siblings => {
@@ -371,6 +472,45 @@ mod tests {
         let mut all = names.clone();
         all.sort();
         assert_eq!(seen, all);
+    }
+
+    #[test]
+    fn m3u_parse() {
+        let text = "#EXTM3U\r\n#EXTINF:12,Title\r\nep1.mkv\r\n\r\n  sub/ep 2.mp4  \r\n/abs/ep3.mp4\n\
+                    file:///abs/%E5%8B%95%E7%94%BB%201.mp4\nfile://localhost/abs/b.mp4\nhttps://example.com/a.mp4\n";
+        let got = parse_m3u(text, Path::new("/base"));
+        let want = ["/base/ep1.mkv", "/base/sub/ep 2.mp4", "/abs/ep3.mp4", "/abs/動画 1.mp4", "/abs/b.mp4"];
+        assert_eq!(got, want.map(PathBuf::from));
+    }
+
+    #[test]
+    fn m3u_save_and_open() {
+        let dir = std::env::temp_dir().join(format!("rvp-m3u-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let items = vec![dir.join("b.mp4"), dir.join("sub/#a 動画.mkv"), dir.join("#c.mp4"), PathBuf::from("/else/d.mp4")];
+        let list = dir.join("list.m3u8");
+        write_m3u(&list, &items).unwrap();
+        let text = std::fs::read_to_string(&list).unwrap();
+        assert_eq!(text, "#EXTM3U\nb.mp4\nsub/#a 動画.mkv\n./#c.mp4\n/else/d.mp4\n");
+
+        // Opening the playlist file yields its entries in order, without sibling expansion.
+        let mut p = Playlist::default();
+        p.set(vec![list.clone()], true);
+        assert_eq!(p.items()[0], items[0]);
+        assert_eq!(p.items()[1], items[1]);
+        assert_eq!(p.items()[2], dir.join("./#c.mp4"));
+        assert_eq!(p.items()[3], items[3]);
+        assert_eq!(p.current_index(), Some(0));
+        assert_eq!(p.append(vec![list.clone()]), 4);
+
+        // Legacy Shift_JIS .m3u, and an HLS manifest that must stay a single media entry.
+        let sjis = dir.join("old.M3U");
+        std::fs::write(&sjis, encoding_rs::SHIFT_JIS.encode("動画.mp4\r\n").0).unwrap();
+        assert_eq!(expand([sjis]), [dir.join("動画.mp4")]);
+        let hls = dir.join("stream.m3u8");
+        std::fs::write(&hls, "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n").unwrap();
+        assert_eq!(expand([hls.clone()]), [hls]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

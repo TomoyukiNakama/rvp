@@ -2,6 +2,9 @@
 name = "rvp"
 version = "0.1.0"
 edition = "2024"
+authors = ["Tomoyuki Nakama"]
+license = "GPL-3.0-or-later"
+description = "Rust と egui で作った動画プレイヤー"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -16,12 +19,15 @@ egui-wgpu = "0.36"
 encoding_rs = "0.8.44"
 env_logger = "0.11.11"
 ffmpeg-next = "9"
+fluent-bundle = "0.16.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.35"
 raw-window-handle = "0.6"
 rfd = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
+sys-locale = "0.3.2"
 toml = "1.2.1"
+unic-langid = "0.9.6"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
 
@@ -31,3 +37,6 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+fluent-syntax = "0.12.0"

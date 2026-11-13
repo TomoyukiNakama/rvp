@@ -5,6 +5,9 @@
 //! - `RVP_SCREENSHOT_EXIT=1` close the app once the file is written
 //! - `RVP_DEBUG_PLAYLIST=1` start with the playlist panel open (read in app.rs)
 //! - `RVP_DEBUG_SPEED=<x>` start at the given playback speed (read in app.rs)
+//! - `RVP_DEBUG_POPUP=speed|tracks|language` open that menu once at startup
+//! - `RVP_DEBUG_LANG=<tag>` use that UI language (not saved; read in app.rs)
+//! - `RVP_DEBUG_ABOUT=license|software|<component name>` open the about dialog (read in app.rs)
 //!
 //! Needed because compositor-level tools (e.g. `grim`) don't work on GNOME/Wayland.
 
@@ -64,4 +67,15 @@ impl DebugShot {
             }
         }
     }
+}
+
+/// Opens the named popup once (for screenshots of menus).
+pub fn maybe_open_popup(ctx: &egui::Context, name: &str, button: &egui::Response) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.load(Ordering::Relaxed) || std::env::var("RVP_DEBUG_POPUP").ok().as_deref() != Some(name) {
+        return;
+    }
+    DONE.store(true, Ordering::Relaxed);
+    egui::Popup::open_id(ctx, egui::Popup::default_response_id(button));
 }

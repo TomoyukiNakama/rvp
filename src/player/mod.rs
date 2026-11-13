@@ -28,7 +28,7 @@ use ffmpeg_next as ffmpeg;
 pub use audio_out::AudioDevice;
 pub use frame::{GPU_16BIT, Matrix, PlaneLayout, VideoFrame};
 pub use hwaccel::HwDec;
-pub use subtitle::{SUBTITLE_EXTENSIONS, is_subtitle_file};
+pub use subtitle::{SUBTITLE_EXTENSIONS, decode_text, is_subtitle_file};
 use subtitle::{Cue, SubtitleTrack};
 use audio_out::AudioShared;
 use clock::Clock;
@@ -58,9 +58,28 @@ pub struct MediaInfo {
 #[derive(Debug, Clone)]
 pub struct TrackInfo {
     pub stream: usize,
-    pub label: String,
+    /// 1-based number among tracks of its kind.
+    pub number: usize,
+    /// ISO 639 code from the metadata (`und` dropped).
+    pub language: Option<String>,
+    pub title: Option<String>,
+    /// e.g. "(aac 2ch)".
+    pub detail: String,
     pub supported: bool,
     pub default: bool,
+}
+
+impl TrackInfo {
+    /// Menu label, e.g. "#1 Japanese Commentary (aac 2ch)", in the current UI language.
+    pub fn label(&self) -> String {
+        let mut parts = vec![format!("#{}", self.number)];
+        if let Some(lang) = &self.language {
+            parts.push(language_name(lang).unwrap_or_else(|| lang.clone()));
+        }
+        parts.extend(self.title.clone());
+        parts.push(self.detail.clone());
+        parts.join(" ")
+    }
 }
 
 /// Which subtitles are shown.
@@ -75,33 +94,28 @@ pub enum SubSel {
 
 const TEXT_SUB_CODECS: &[&str] = &["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"];
 
-fn language_name(code: &str) -> Option<&'static str> {
-    Some(match code {
-        "jpn" | "ja" => "日本語",
-        "eng" | "en" => "英語",
-        "chi" | "zho" | "zh" => "中国語",
-        "kor" | "ko" => "韓国語",
-        "fre" | "fra" | "fr" => "フランス語",
-        "ger" | "deu" | "de" => "ドイツ語",
-        "spa" | "es" => "スペイン語",
-        "ita" | "it" => "イタリア語",
-        "rus" | "ru" => "ロシア語",
-        "por" | "pt" => "ポルトガル語",
+/// Localised name of a track language (ISO 639-1/-2 code), for the common ones.
+fn language_name(code: &str) -> Option<String> {
+    let short = match code {
+        "jpn" | "ja" => "ja",
+        "eng" | "en" => "en",
+        "chi" | "zho" | "zh" => "zh",
+        "kor" | "ko" => "ko",
+        "fre" | "fra" | "fr" => "fr",
+        "ger" | "deu" | "de" => "de",
+        "spa" | "es" => "es",
+        "ita" | "it" => "it",
+        "rus" | "ru" => "ru",
+        "por" | "pt" => "pt",
         _ => return None,
-    })
+    };
+    Some(t!(&format!("lang-{short}")))
 }
 
 fn track_info(stream: &ffmpeg::format::stream::Stream<'_>, n: usize, audio: bool) -> TrackInfo {
     let meta = stream.metadata();
     let params = stream.parameters();
     let codec = params.id().name().to_owned();
-    let mut parts = vec![format!("#{n}")];
-    if let Some(lang) = meta.get("language").filter(|l| *l != "und") {
-        parts.push(language_name(lang).map_or_else(|| lang.to_owned(), str::to_owned));
-    }
-    if let Some(title) = meta.get("title").filter(|t| !t.trim().is_empty()) {
-        parts.push(title.to_owned());
-    }
     let detail = if audio {
         // SAFETY: field read on valid codec parameters.
         let ch = unsafe { (*params.as_ptr()).ch_layout.nb_channels };
@@ -109,10 +123,12 @@ fn track_info(stream: &ffmpeg::format::stream::Stream<'_>, n: usize, audio: bool
     } else {
         format!("({codec})")
     };
-    parts.push(detail);
     TrackInfo {
         stream: stream.index(),
-        label: parts.join(" "),
+        number: n,
+        language: meta.get("language").filter(|l| *l != "und").map(str::to_owned),
+        title: meta.get("title").filter(|t| !t.trim().is_empty()).map(str::to_owned),
+        detail,
         supported: audio || TEXT_SUB_CODECS.contains(&codec.as_str()),
         default: stream.disposition().contains(ffmpeg::format::stream::Disposition::DEFAULT),
     }
@@ -167,7 +183,7 @@ pub(crate) enum PlayerEvent {
 }
 
 pub fn init() -> anyhow::Result<()> {
-    ffmpeg::init().context("FFmpeg の初期化に失敗しました")?;
+    ffmpeg::init().context("FFmpeg initialisation failed")?;
     ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Error);
     Ok(())
 }
@@ -219,7 +235,7 @@ fn setup_audio(input: &ffmpeg::format::context::Input) -> anyhow::Result<Option<
     let decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?
         .decoder()
         .audio()
-        .context("音声デコーダを開けませんでした")?;
+        .with_context(|| t!("error-audio-decoder"))?;
     Ok(Some(AudioSetup {
         index: stream.index(),
         time_base: f64::from(tb.numerator()) / f64::from(tb.denominator()),
@@ -231,12 +247,12 @@ impl Player {
     /// Opens `path`. Audio plays through `audio` when given (and the file has audio).
     pub fn open(path: &Path, repaint: egui::Context, audio: Option<&AudioDevice>, hwdec: HwDec) -> anyhow::Result<Self> {
         let input = ffmpeg::format::input(path)
-            .with_context(|| format!("開けませんでした: {}", path.display()))?;
+            .with_context(|| t!("error-open-file", path = path.display().to_string()))?;
 
         let stream = input
             .streams()
             .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!("映像ストリームが見つかりません"))?;
+            .ok_or_else(|| anyhow!(t!("error-no-video-stream")))?;
         let video_index = stream.index();
         let tb = stream.time_base();
         let time_base = f64::from(tb.numerator()) / f64::from(tb.denominator());
@@ -266,13 +282,13 @@ impl Player {
             },
             None => video_decode::open_sw_decoder(params.clone()),
         }
-        .context("映像デコーダを開けませんでした")?;
+        .with_context(|| t!("error-video-decoder"))?;
 
         let (audio_setup, audio_error) = match audio.map(|_| setup_audio(&input)).transpose() {
             Ok(a) => (a.flatten(), None),
             Err(e) => {
                 log::warn!("audio disabled: {e:#}");
-                (None, Some(format!("音声を再生できません: {e:#}")))
+                (None, Some(t!("error-audio-playback", error = format!("{e:#}"))))
             }
         };
 
@@ -519,9 +535,9 @@ impl Player {
 
     /// Loads an external subtitle file and selects it.
     pub fn add_external_subtitle(&mut self, path: &Path) -> anyhow::Result<usize> {
-        let track = subtitle::load_file(path).with_context(|| format!("字幕を読み込めません: {}", path.display()))?;
+        let track = subtitle::load_file(path).with_context(|| t!("error-subtitle-load", path = path.display().to_string()))?;
         if track.len() == 0 {
-            anyhow::bail!("字幕が見つかりません: {}", path.display());
+            anyhow::bail!(t!("error-subtitle-empty", path = path.display().to_string()));
         }
         let n = track.len();
         self.sub_external.push((path.to_path_buf(), track));
@@ -705,7 +721,7 @@ impl Player {
                 }
                 PlayerEvent::HwFallback => {
                     self.hw_active = false;
-                    self.error = Some("ハードウェアデコードに失敗したため、ソフトウェアに切り替えました".into());
+                    self.error = Some(t!("error-hw-fallback"));
                     self.reseek();
                 }
             }
@@ -1004,8 +1020,8 @@ mod tests {
         assert_eq!(info.audio_tracks.len(), 2);
         assert_eq!(info.subtitle_tracks.len(), 2);
         assert!(info.subtitle_tracks.iter().all(|t| t.supported));
-        assert!(info.subtitle_tracks[0].label.contains("日本語"), "{}", info.subtitle_tracks[0].label);
-        assert!(info.audio_tracks[1].label.contains("英語"), "{}", info.audio_tracks[1].label);
+        assert!(info.subtitle_tracks[0].label().contains("Japanese"), "{}", info.subtitle_tracks[0].label());
+        assert!(info.audio_tracks[1].label().contains("English"), "{}", info.audio_tracks[1].label());
         let (ja, en) = (info.subtitle_tracks[0].stream, info.subtitle_tracks[1].stream);
 
         // Default-flagged embedded track is picked automatically.

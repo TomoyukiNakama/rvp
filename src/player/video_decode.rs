@@ -131,7 +131,7 @@ fn hw_error(c: &mut VideoDecodeCtx, st: &mut State) -> bool {
             c.event_tx.send(PlayerEvent::HwFallback).is_err()
         }
         Err(e) => {
-            let _ = c.event_tx.send(PlayerEvent::Error(format!("デコーダを開けません: {e}")));
+            let _ = c.event_tx.send(PlayerEvent::Error(t!("error-decoder-open", error = e.to_string())));
             true
         }
     }

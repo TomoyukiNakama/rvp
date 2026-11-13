@@ -40,15 +40,18 @@ pub fn speed_button(ui: &mut Ui, speed: f32) -> Option<f32> {
     }
     let text_color = if non_default { color::ACCENT } else { color::TEXT };
     p.galley(pill.center() - galley.size() / 2.0, galley, text_color);
-    let resp = resp.on_hover_text("再生速度 ([ / ], Backspace でリセット)");
+    let resp = resp.on_hover_text(t!("speed-tooltip"));
 
+    crate::debug_shot::maybe_open_popup(ui.ctx(), "speed", &resp);
     let mut chosen = None;
-    Popup::menu(&resp).align(RectAlign::TOP).gap(10.0).show(|ui| {
-        ui.set_min_width(96.0);
-        ui.spacing_mut().item_spacing.y = 2.0;
+    // Fixed, narrow column: rows must not stretch to the parent (control bar) width.
+    const MENU_WIDTH: f32 = 76.0;
+    Popup::menu(&resp).align(RectAlign::TOP).gap(10.0).width(MENU_WIDTH).show(|ui| {
+        ui.set_width(MENU_WIDTH);
+        ui.spacing_mut().item_spacing.y = 1.0;
         for &preset in PRESETS.iter().rev() {
             let current = (preset - speed).abs() < 1e-3;
-            let (r, item) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+            let (r, item) = ui.allocate_exact_size(vec2(MENU_WIDTH, 24.0), Sense::click());
             if current {
                 ui.painter().rect_filled(r, CornerRadius::same(7), color::ACCENT.gamma_multiply(0.18));
             } else if item.hovered() {

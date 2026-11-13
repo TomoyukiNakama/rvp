@@ -1,3 +1,7 @@
+#[macro_use]
+mod i18n;
+
+mod about;
 mod app;
 mod config;
 mod debug_shot;

@@ -10,6 +10,10 @@ pub mod color {
     pub const BG: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x10);
     /// Floating panels (control bar, popups) — translucent.
     pub const SURFACE: Color32 = Color32::from_rgba_unmultiplied_const(18, 20, 26, 214);
+    /// Dialogs: opaque so long text stays readable over the video.
+    pub const SURFACE_OPAQUE: Color32 = Color32::from_rgb(0x15, 0x17, 0x1e);
+    /// Recessed area for long monospace text (licence texts).
+    pub const TEXT_BOX: Color32 = Color32::from_rgb(0x0e, 0x10, 0x15);
     pub const SURFACE_HOVER: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 22);
     pub const SURFACE_ACTIVE: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 36);
     pub const BORDER: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 18);

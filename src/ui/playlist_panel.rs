@@ -19,6 +19,7 @@ pub enum PlaylistAction {
     CycleRepeat,
     ToggleShuffle,
     Add,
+    Save,
     Close,
 }
 
@@ -72,24 +73,34 @@ pub fn playlist_panel(ui: &mut Ui, window: Rect, m: &PlaylistModel<'_>, alpha: f
             // Header.
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new("プレイリスト").strong().size(15.0));
-                let pos = m.current.map_or(0, |c| c + 1);
-                ui.label(RichText::new(format!("{pos}/{}", m.items.len())).color(color::TEXT_DIM).size(12.5));
+                // Five buttons leave little room in a narrow panel: drop the
+                // counter first, then show it in place of the title.
+                let w = ui.available_width();
+                if w >= 290.0 {
+                    ui.label(RichText::new(t!("playlist-title")).strong().size(15.0));
+                }
+                if !(290.0..330.0).contains(&w) {
+                    let pos = m.current.map_or(0, |c| c + 1);
+                    ui.label(RichText::new(format!("{pos}/{}", m.items.len())).color(color::TEXT_DIM).size(12.5));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    if icon_button_ex(ui, icon::X, "閉じる (P)", size::ICON_SIZE - 2.0, None).clicked() {
+                    if icon_button_ex(ui, icon::X, &t!("playlist-close"), size::ICON_SIZE - 2.0, None).clicked() {
                         actions.push(PlaylistAction::Close);
                     }
-                    if icon_button(ui, icon::PLUS, "ファイルを追加").clicked() {
+                    if icon_button(ui, icon::FLOPPY_DISK, &t!("playlist-save")).clicked() {
+                        actions.push(PlaylistAction::Save);
+                    }
+                    if icon_button(ui, icon::PLUS, &t!("playlist-add")).clicked() {
                         actions.push(PlaylistAction::Add);
                     }
                     let rep_icon = if m.repeat == Repeat::One { icon::REPEAT_ONCE } else { icon::REPEAT };
                     let rep_tip = m.repeat.label();
-                    if toggle_icon(ui, rep_icon, rep_tip, m.repeat != Repeat::Off).clicked() {
+                    if toggle_icon(ui, rep_icon, &rep_tip, m.repeat != Repeat::Off).clicked() {
                         actions.push(PlaylistAction::CycleRepeat);
                     }
-                    let shuf_tip = if m.shuffle { "シャッフル: オン" } else { "シャッフル: オフ" };
-                    if toggle_icon(ui, icon::SHUFFLE, shuf_tip, m.shuffle).clicked() {
+                    let shuf_tip = t!(if m.shuffle { "shuffle-on" } else { "shuffle-off" });
+                    if toggle_icon(ui, icon::SHUFFLE, &shuf_tip, m.shuffle).clicked() {
                         actions.push(PlaylistAction::ToggleShuffle);
                     }
                 });
@@ -102,7 +113,7 @@ pub fn playlist_panel(ui: &mut Ui, window: Rect, m: &PlaylistModel<'_>, alpha: f
             if m.items.is_empty() {
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("ファイルをドロップして追加").color(color::TEXT_DIM));
+                    ui.label(RichText::new(t!("playlist-empty-hint")).color(color::TEXT_DIM));
                 });
                 return;
             }
@@ -119,13 +130,19 @@ pub fn playlist_panel(ui: &mut Ui, window: Rect, m: &PlaylistModel<'_>, alpha: f
 
 fn row(ui: &mut Ui, i: usize, m: &PlaylistModel<'_>, actions: &mut Vec<PlaylistAction>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
+    #[cfg(test)]
+    tests::ROW_RECTS.with(|r| r.borrow_mut().push(rect));
     let is_current = m.current == Some(i);
+    // Pointer position, not `resp.hovered()`: once the pointer is on the remove
+    // button, that button (not the row) is the hovered widget, and the button
+    // must still exist on the frame the click lands.
+    let hovered = ui.rect_contains_pointer(rect) && !ui.ctx().dragged_id().is_some_and(|d| d != resp.id);
     let p = ui.painter();
     let radius = CornerRadius::same(size::BUTTON_RADIUS);
 
     if is_current {
         p.rect_filled(rect, radius, color::ACCENT.gamma_multiply(0.16));
-    } else if resp.hovered() || resp.dragged() {
+    } else if hovered || resp.dragged() {
         p.rect_filled(rect, radius, color::SURFACE_HOVER);
     }
 
@@ -141,7 +158,6 @@ fn row(ui: &mut Ui, i: usize, m: &PlaylistModel<'_>, actions: &mut Vec<PlaylistA
         .file_name()
         .map_or_else(|| m.items[i].to_string_lossy(), |n| n.to_string_lossy())
         .into_owned();
-    let hovered = resp.hovered();
     let text_right = rect.right() - if hovered { 40.0 } else { 10.0 };
     let text_color = if is_current { color::TEXT } else { color::TEXT.gamma_multiply(0.85) };
     let galley = ui.painter().layout(name.clone(), FontId::proportional(14.0), text_color, f32::INFINITY);
@@ -186,5 +202,61 @@ fn row(ui: &mut Ui, i: usize, m: &PlaylistModel<'_>, actions: &mut Vec<PlaylistA
         && *from != i
     {
         actions.push(PlaylistAction::Move { from: *from, to: i });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub static ROW_RECTS: RefCell<Vec<Rect>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Drives the panel with synthetic pointer input: hovering a row and
+    /// clicking its × must yield `Remove`.
+    #[test]
+    fn remove_button_click() {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        ctx.set_fonts(fonts);
+        let items: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"].iter().map(PathBuf::from).collect();
+        let model = PlaylistModel { items: &items, current: Some(2), repeat: Repeat::Off, shuffle: false };
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 720.0));
+
+        let mut frame = |events: Vec<egui::Event>| -> Vec<PlaylistAction> {
+            ROW_RECTS.with(|r| r.borrow_mut().clear());
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                actions = playlist_panel(ui, screen, &model, 1.0);
+            });
+            out.textures_delta.clear(); // no renderer in tests
+            actions
+        };
+
+        frame(vec![]);
+        frame(vec![]);
+        let row = ROW_RECTS.with(|r| r.borrow()[1]);
+        let x = egui::pos2(row.right() - 20.0, row.center().y);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: x,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut all = Vec::new();
+        all.extend(frame(vec![egui::Event::PointerMoved(x)]));
+        all.extend(frame(vec![]));
+        all.extend(frame(vec![press(true)]));
+        all.extend(frame(vec![press(false)]));
+        all.extend(frame(vec![]));
+        assert!(
+            all.iter().any(|a| matches!(a, PlaylistAction::Remove(1))),
+            "clicking × on row 2 should remove it"
+        );
+        assert!(!all.iter().any(|a| matches!(a, PlaylistAction::Play(_))), "single click must not play");
     }
 }

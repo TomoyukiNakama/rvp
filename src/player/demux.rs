@@ -83,7 +83,7 @@ pub(super) fn run(mut d: DemuxCtx) {
                 consecutive_errors += 1;
                 log::warn!("demux read error: {e}");
                 if consecutive_errors > 100 {
-                    let _ = d.event_tx.send(PlayerEvent::Error(format!("読み込みエラー: {e}")));
+                    let _ = d.event_tx.send(PlayerEvent::Error(t!("error-read", error = e.to_string())));
                     eof = true;
                     broadcast(&d, || PacketMsg::Eof { serial });
                 }
@@ -187,7 +187,7 @@ fn select_track(d: &mut DemuxCtx, cmd: DemuxCmd) -> bool {
                     tx.send(msg).is_ok()
                 }
                 Err(e) => {
-                    let _ = d.event_tx.send(PlayerEvent::Error(format!("音声トラックを開けません: {e}")));
+                    let _ = d.event_tx.send(PlayerEvent::Error(t!("error-audio-track-open", error = format!("{e:#}"))));
                     true
                 }
             }

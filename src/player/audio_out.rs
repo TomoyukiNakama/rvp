@@ -100,10 +100,10 @@ impl AudioDevice {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
-            .ok_or_else(|| anyhow!("音声出力デバイスがありません"))?;
+            .ok_or_else(|| anyhow!(t!("error-no-audio-device")))?;
         let supported = device
             .default_output_config()
-            .context("音声出力の設定を取得できません")?;
+            .with_context(|| t!("error-audio-config"))?;
         let config = supported.config();
         let shared = Arc::new(AudioShared {
             queue: Mutex::new(AudioQueue {
@@ -125,9 +125,9 @@ impl AudioDevice {
             cpal::SampleFormat::I16 => build::<i16>(&device, config, shared.clone()),
             cpal::SampleFormat::I32 => build::<i32>(&device, config, shared.clone()),
             cpal::SampleFormat::U16 => build::<u16>(&device, config, shared.clone()),
-            other => Err(anyhow!("未対応のサンプル形式: {other:?}")),
+            other => Err(anyhow!(t!("error-sample-format", format = format!("{other:?}")))),
         }?;
-        stream.play().context("音声出力を開始できません")?;
+        stream.play().with_context(|| t!("error-audio-start"))?;
         log::info!(
             "audio out: {} Hz, {} ch, {:?}",
             shared.rate,

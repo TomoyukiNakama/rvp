@@ -57,6 +57,9 @@ pub struct Config {
     pub seek_large: f64,
     /// Hardware decoding: auto / off / cuda / vaapi.
     pub hwdec: HwDec,
+    /// UI language (BCP 47 tag, e.g. "ja", "pt-BR"). Empty = not chosen yet:
+    /// detected from the OS locale on start-up and saved.
+    pub language: String,
 }
 
 impl Default for Config {
@@ -71,6 +74,7 @@ impl Default for Config {
             seek_small: 5.0,
             seek_large: 60.0,
             hwdec: HwDec::Auto,
+            language: String::new(),
         }
     }
 }

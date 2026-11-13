@@ -29,14 +29,14 @@ pub enum TracksAction {
 
 /// All selectable subtitle choices in menu order, with labels.
 pub fn subtitle_choices(m: &TracksModel<'_>) -> Vec<(SubSel, String)> {
-    let mut v = vec![(SubSel::Off, "オフ".to_owned())];
-    v.extend(m.subs.iter().filter(|t| t.supported).map(|t| (SubSel::Embedded(t.stream), t.label.clone())));
+    let mut v = vec![(SubSel::Off, t!("tracks-off"))];
+    v.extend(m.subs.iter().filter(|t| t.supported).map(|t| (SubSel::Embedded(t.stream), t.label())));
     v.extend(m.externals.iter().enumerate().map(|(i, n)| (SubSel::External(i), format!("{} {n}", icon::FILE_TEXT))));
     v
 }
 
 pub fn format_delay(d: f64) -> String {
-    format!("{}{:.1} 秒", if d >= 0.0 { "+" } else { "−" }, d.abs())
+    t!("delay-seconds", sign = if d >= 0.0 { "+" } else { "−" }, value = format!("{:.1}", d.abs()))
 }
 
 fn row(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> bool {
@@ -74,24 +74,25 @@ fn heading(ui: &mut Ui, text: &str) {
 }
 
 pub fn tracks_button(ui: &mut Ui, m: &TracksModel<'_>) -> Option<TracksAction> {
-    let tip = "字幕・音声 (V / S / A)";
-    let resp = icon_button(ui, icon::SUBTITLES, tip);
+    let resp = icon_button(ui, icon::SUBTITLES, &t!("tracks-tooltip"));
     if m.sub_sel != SubSel::Off && m.visible {
         // Small accent dot: subtitles are on.
         ui.painter().circle_filled(resp.rect.right_top() + vec2(-9.0, 9.0), 3.0, color::ACCENT);
     }
 
+    crate::debug_shot::maybe_open_popup(ui.ctx(), "tracks", &resp);
     let mut action = None;
+    const MENU_WIDTH: f32 = 300.0;
     Popup::menu(&resp)
         .align(RectAlign::TOP)
         .gap(10.0)
+        .width(MENU_WIDTH)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.set_min_width(260.0);
-            ui.set_max_width(360.0);
+            ui.set_width(MENU_WIDTH);
             ui.spacing_mut().item_spacing.y = 2.0;
 
-            heading(ui, "字幕");
+            heading(ui, &t!("tracks-subtitles"));
             for (sel, label) in subtitle_choices(m) {
                 if row(ui, &label, sel == m.sub_sel, true) {
                     action = Some(TracksAction::Subtitle(sel));
@@ -99,9 +100,9 @@ pub fn tracks_button(ui: &mut Ui, m: &TracksModel<'_>) -> Option<TracksAction> {
                 }
             }
             for t in m.subs.iter().filter(|t| !t.supported) {
-                row_ex(ui, &format!("{} (未対応)", t.label), false, false, Some("画像字幕には未対応です"));
+                row_ex(ui, &t!("tracks-unsupported", label = t.label()), false, false, Some(&t!("tracks-unsupported-why")));
             }
-            if row(ui, &format!("{}  字幕ファイルを読み込む…", icon::FOLDER_OPEN), false, true) {
+            if row(ui, &format!("{}  {}", icon::FOLDER_OPEN, t!("tracks-load-subtitle")), false, true) {
                 action = Some(TracksAction::LoadSubtitle);
                 ui.close();
             }
@@ -109,28 +110,28 @@ pub fn tracks_button(ui: &mut Ui, m: &TracksModel<'_>) -> Option<TracksAction> {
             // Timing + visibility (popup stays open while adjusting).
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                ui.label(RichText::new("タイミング").size(13.0).color(color::TEXT_DIM));
+                ui.add_space(22.0);
+                ui.label(RichText::new(t!("tracks-timing")).size(13.0).color(color::TEXT_DIM));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    if icon_button(ui, icon::PLUS, "遅らせる (X)").clicked() {
+                    if icon_button(ui, icon::PLUS, &t!("tracks-delay-later")).clicked() {
                         action = Some(TracksAction::Delay(0.1));
                     }
                     let d = ui.add(
                         egui::Label::new(RichText::new(format_delay(m.delay)).monospace().size(13.0))
                             .sense(Sense::click()),
                     );
-                    if d.on_hover_text("クリックでリセット").clicked() {
+                    if d.on_hover_text(t!("tracks-delay-reset")).clicked() {
                         action = Some(TracksAction::Delay(0.0));
                     }
-                    if icon_button(ui, icon::MINUS, "早める (Z)").clicked() {
+                    if icon_button(ui, icon::MINUS, &t!("tracks-delay-earlier")).clicked() {
                         action = Some(TracksAction::Delay(-0.1));
                     }
                 });
             });
             if m.sub_sel != SubSel::Off {
-                let label = if m.visible { "字幕を隠す (V)" } else { "字幕を表示 (V)" };
-                if row(ui, label, false, true) {
+                let label = t!(if m.visible { "tracks-hide-subtitles" } else { "tracks-show-subtitles" });
+                if row(ui, &label, false, true) {
                     action = Some(TracksAction::ToggleVisible);
                 }
             }
@@ -140,10 +141,10 @@ pub fn tracks_button(ui: &mut Ui, m: &TracksModel<'_>) -> Option<TracksAction> {
                 let sep = ui.available_rect_before_wrap();
                 ui.painter().hline(sep.x_range(), sep.top(), egui::Stroke::new(1.0, color::BORDER));
                 ui.add_space(4.0);
-                heading(ui, "音声");
+                heading(ui, &t!("tracks-audio"));
                 for t in m.audio {
                     let enabled = m.audio_sel.is_some();
-                    if row_ex(ui, &t.label, m.audio_sel == Some(t.stream), enabled, Some("音声出力がありません")) {
+                    if row_ex(ui, &t.label(), m.audio_sel == Some(t.stream), enabled, Some(&t!("tracks-no-audio-output"))) {
                         action = Some(TracksAction::Audio(t.stream));
                         ui.close();
                     }

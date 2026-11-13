@@ -12,10 +12,11 @@ use egui_phosphor::regular as icon;
 
 use crate::config::{Config, ResumeStore};
 use crate::player::{AudioDevice, GPU_16BIT, HwDec, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
-use crate::playlist::{Playlist, VIDEO_EXTENSIONS};
+use crate::playlist::{PLAYLIST_EXTENSIONS, Playlist, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
+use crate::ui::about::{self as about_ui, AboutState};
 use crate::ui::playlist_panel::{self, PlaylistAction, PlaylistModel};
 use crate::ui::seekbar::SeekEvent;
 use crate::ui::speed::{self, format_speed};
@@ -42,6 +43,7 @@ enum DialogKind {
     OpenFolder,
     Append,
     Subtitle,
+    SavePlaylist,
 }
 
 /// Result of the background file dialog.
@@ -87,12 +89,13 @@ pub struct RvpApp {
     fit_done: Option<(egui::Vec2, f32)>,
     /// Playback speed, kept across files for the session (not persisted).
     speed: f32,
+    /// "rvp について" dialog (licences), when open.
+    about: Option<AboutState>,
     debug_shot: Option<crate::debug_shot::DebugShot>,
 }
 
 impl RvpApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
-        crate::fonts::install(&cc.egui_ctx);
         if let Some(rs) = &cc.wgpu_render_state {
             let gpu16 = rs.device.features().contains(egui_wgpu::wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
             GPU_16BIT.store(gpu16, Ordering::Relaxed);
@@ -113,11 +116,21 @@ impl RvpApp {
             Ok(d) => (Some(d), None),
             Err(e) => {
                 log::warn!("audio device unavailable: {e:#}");
-                (None, Some(format!("音声出力を開けません: {e:#}")))
+                (None, Some(t!("error-audio-device", error = format!("{e:#}"))))
             }
         };
 
-        let config = Config::load();
+        // UI language: saved choice, else the OS locale (saved below on first run).
+        let mut config = Config::load();
+        let known = crate::i18n::available().iter().any(|l| l.tag == config.language);
+        let first_run = !known;
+        if !known {
+            config.language = crate::i18n::detect();
+        }
+        // Debug aid for screenshots (not saved).
+        let language = std::env::var("RVP_DEBUG_LANG").unwrap_or_else(|_| config.language.clone());
+        crate::i18n::set_language(&language);
+        crate::fonts::install(&cc.egui_ctx, &language);
         let mut playlist = Playlist::default();
         playlist.repeat = config.repeat;
         playlist.set_shuffle(config.shuffle);
@@ -151,8 +164,18 @@ impl RvpApp {
             fit_done: None,
             // Debug aid for screenshots (see debug_shot.rs).
             speed: std::env::var("RVP_DEBUG_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0),
+            // Debug aid for screenshots (see debug_shot.rs).
+            about: match std::env::var("RVP_DEBUG_ABOUT").as_deref() {
+                Ok("license") => Some(AboutState::new(about_ui::Tab::License)),
+                Ok("software") => Some(AboutState::new(about_ui::Tab::Software)),
+                Ok(name) if !name.is_empty() => Some(AboutState::with_component(name)),
+                _ => None,
+            },
             debug_shot: crate::debug_shot::DebugShot::from_env(),
         };
+        if first_run {
+            app.config.save();
+        }
         if let Some(e) = audio_error {
             app.show_osd(&cc.egui_ctx, e, true);
         }
@@ -168,7 +191,7 @@ impl RvpApp {
     fn open_paths(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>, append: bool) {
         if append {
             let n = self.playlist.append(paths);
-            self.show_osd(ctx, format!("{n} 件をプレイリストに追加"), false);
+            self.show_osd(ctx, t!("osd-added", count = n), false);
             if self.player.is_none() {
                 self.play_current(ctx);
             }
@@ -177,7 +200,7 @@ impl RvpApp {
         let single = paths.len() == 1;
         self.playlist.set(paths, single && self.config.queue_siblings);
         if self.playlist.len() == 0 {
-            self.show_osd(ctx, "再生できる動画が見つかりません".into(), true);
+            self.show_osd(ctx, t!("osd-no-playable"), true);
             return;
         }
         self.play_current(ctx);
@@ -215,7 +238,7 @@ impl RvpApp {
                 let resumed = self.config.resume.then(|| self.resume.get(&path)).flatten();
                 if let Some(pos) = resumed {
                     p.seek(pos, true);
-                    self.show_osd(ctx, format!("前回の位置から再開 ({})", format_time(pos)), false);
+                    self.show_osd(ctx, t!("osd-resumed", time = format_time(pos)), false);
                 } else if self.playlist.len() > 1 {
                     let n = self.playlist.current_index().map_or(0, |i| i + 1);
                     self.show_osd(ctx, format!("{n}/{}  {}", self.playlist.len(), info.title), false);
@@ -245,7 +268,7 @@ impl RvpApp {
         if self.playlist.next().is_some() {
             self.play_current(ctx);
         } else {
-            self.show_osd(ctx, "プレイリストの最後です".into(), false);
+            self.show_osd(ctx, t!("osd-playlist-end"), false);
         }
     }
 
@@ -295,7 +318,7 @@ impl RvpApp {
         self.playlist.repeat = self.playlist.repeat.cycle();
         self.config.repeat = self.playlist.repeat;
         self.mark_config_dirty(ctx);
-        self.show_osd(ctx, self.playlist.repeat.label().into(), false);
+        self.show_osd(ctx, self.playlist.repeat.label(), false);
     }
 
     fn handle_playlist_action(&mut self, ctx: &egui::Context, action: PlaylistAction) {
@@ -327,10 +350,31 @@ impl RvpApp {
                 self.playlist.set_shuffle(on);
                 self.config.shuffle = on;
                 self.mark_config_dirty(ctx);
-                self.show_osd(ctx, if on { "シャッフル: オン" } else { "シャッフル: オフ" }.into(), false);
+                self.show_osd(ctx, t!(if on { "shuffle-on" } else { "shuffle-off" }), false);
             }
             PlaylistAction::Add => self.open_dialog(ctx, DialogKind::Append),
+            PlaylistAction::Save => self.save_playlist_dialog(ctx),
             PlaylistAction::Close => self.show_playlist = false,
+        }
+    }
+
+    fn save_playlist_dialog(&mut self, ctx: &egui::Context) {
+        if self.playlist.len() == 0 {
+            self.show_osd(ctx, t!("osd-playlist-empty"), true);
+        } else {
+            self.open_dialog(ctx, DialogKind::SavePlaylist);
+        }
+    }
+
+    /// Writes the playlist as M3U8 (`.m3u8` is added unless the name ends in `.m3u` / `.m3u8`).
+    fn save_playlist(&mut self, ctx: &egui::Context, mut path: PathBuf) {
+        if !crate::playlist::is_playlist_file(&path) {
+            path.as_mut_os_string().push(".m3u8");
+        }
+        let name = path.file_name().map_or_else(|| "".into(), |n| n.to_string_lossy());
+        match crate::playlist::write_m3u(&path, self.playlist.items()) {
+            Ok(()) => self.show_osd(ctx, t!("osd-playlist-saved", name = name), false),
+            Err(e) => self.show_osd(ctx, t!("osd-playlist-save-failed", error = e.to_string()), true),
         }
     }
 
@@ -383,19 +427,28 @@ impl RvpApp {
             if let Some(dir) = start_dir {
                 dialog = dialog.set_directory(dir);
             }
-            if matches!(kind, DialogKind::OpenFolder) {
-                let picked = dialog.set_title("フォルダを開く").pick_folders();
-                let _ = tx.send(picked.map(|paths| DialogResult { paths, kind }));
-                ctx.request_repaint();
-                return;
-            }
-            dialog = match kind {
-                DialogKind::Open | DialogKind::OpenFolder | DialogKind::Append => dialog
-                    .set_title(if matches!(kind, DialogKind::Append) { "プレイリストに追加" } else { "動画を開く" })
-                    .add_filter("動画", VIDEO_EXTENSIONS),
-                DialogKind::Subtitle => dialog.set_title("字幕ファイルを読み込む").add_filter("字幕", SUBTITLE_EXTENSIONS),
+            let picked = match kind {
+                DialogKind::OpenFolder => dialog.set_title(t!("dialog-open-folder")).pick_folders(),
+                DialogKind::SavePlaylist => dialog
+                    .set_title(t!("dialog-save-playlist"))
+                    .set_file_name("playlist.m3u8")
+                    .add_filter(t!("dialog-filter-playlist"), PLAYLIST_EXTENSIONS)
+                    .save_file()
+                    .map(|p| vec![p]),
+                DialogKind::Open | DialogKind::Append => {
+                    let media: Vec<&str> = VIDEO_EXTENSIONS.iter().chain(PLAYLIST_EXTENSIONS).copied().collect();
+                    dialog
+                        .set_title(t!(if matches!(kind, DialogKind::Append) { "dialog-add-to-playlist" } else { "dialog-open-video" }))
+                        .add_filter(t!("dialog-filter-media"), &media)
+                        .add_filter(t!("dialog-filter-all"), &["*"])
+                        .pick_files()
+                }
+                DialogKind::Subtitle => dialog
+                    .set_title(t!("dialog-load-subtitle"))
+                    .add_filter(t!("dialog-filter-subtitles"), SUBTITLE_EXTENSIONS)
+                    .add_filter(t!("dialog-filter-all"), &["*"])
+                    .pick_files(),
             };
-            let picked = dialog.add_filter("すべてのファイル", &["*"]).pick_files();
             let _ = tx.send(picked.map(|paths| DialogResult { paths, kind }));
             ctx.request_repaint();
         });
@@ -403,14 +456,14 @@ impl RvpApp {
 
     fn load_subtitles(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>) {
         let Some(p) = self.player.as_mut() else {
-            self.show_osd(ctx, "先に動画を開いてください".into(), true);
+            self.show_osd(ctx, t!("osd-open-video-first"), true);
             return;
         };
         let mut msg = None;
         for path in paths {
             msg = Some(match p.add_external_subtitle(&path) {
                 Ok(n) => (
-                    format!("字幕: {} ({n} 件)", path.file_name().map_or_else(|| "".into(), |n| n.to_string_lossy())),
+                    t!("osd-subtitle-loaded", name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()), count = n),
                     false,
                 ),
                 Err(e) => (format!("{e:#}"), true),
@@ -441,14 +494,14 @@ impl RvpApp {
         let osd = match action {
             TracksAction::Audio(stream) => {
                 p.select_audio(stream);
-                let label = p.info().audio_tracks.iter().find(|t| t.stream == stream).map(|t| t.label.clone());
-                format!("音声: {}", label.unwrap_or_default())
+                let label = p.info().audio_tracks.iter().find(|t| t.stream == stream).map(|t| t.label());
+                t!("osd-audio-track", label = label.unwrap_or_default())
             }
             TracksAction::Subtitle(sel) => {
                 p.select_subtitle(sel);
                 let m = Self::tracks_model(p);
                 let label = subtitle_choices(&m).into_iter().find(|(s, _)| *s == sel).map(|(_, l)| l);
-                format!("字幕: {}", label.unwrap_or_default())
+                t!("osd-subtitle-track", label = label.unwrap_or_default())
             }
             TracksAction::LoadSubtitle => {
                 self.open_dialog(ctx, DialogKind::Subtitle);
@@ -457,12 +510,12 @@ impl RvpApp {
             TracksAction::ToggleVisible => {
                 let v = !p.subtitles_visible();
                 p.set_subtitles_visible(v);
-                (if v { "字幕: 表示" } else { "字幕: 非表示" }).to_owned()
+                t!(if v { "osd-subtitles-shown" } else { "osd-subtitles-hidden" })
             }
             TracksAction::Delay(d) => {
                 let new = if d == 0.0 { 0.0 } else { p.subtitle_delay() + d };
                 p.set_subtitle_delay(new);
-                format!("字幕のタイミング: {}", format_delay(p.subtitle_delay()))
+                t!("osd-subtitle-delay", delay = format_delay(p.subtitle_delay()))
             }
         };
         self.show_osd(ctx, osd, false);
@@ -482,8 +535,8 @@ impl RvpApp {
                 }
             }
         }
-        let mode = if self.config.hwdec == HwDec::Off { "オフ" } else { "自動" };
-        self.show_osd(ctx, format!("ハードウェアデコード: {mode}"), false);
+        let text = t!(if self.config.hwdec == HwDec::Off { "osd-hwdec-off" } else { "osd-hwdec-auto" });
+        self.show_osd(ctx, text, false);
     }
 
     /// `I`: codec / resolution / decoder summary.
@@ -492,10 +545,17 @@ impl RvpApp {
         let i = p.info();
         let decoder = match p.hwdec() {
             Some(hw) => format!("HW ({hw})"),
-            None => "ソフトウェア".to_owned(),
+            None => t!("media-info-software"),
         };
-        let audio = i.audio_codec.clone().unwrap_or_else(|| "なし".into());
-        let text = format!("映像: {} {}×{} · デコード: {decoder}\n音声: {audio}", i.codec, i.width, i.height);
+        let audio = i.audio_codec.clone().unwrap_or_else(|| t!("media-info-none"));
+        let text = t!(
+            "osd-media-info",
+            codec = i.codec.as_str(),
+            width = i.width.to_string(),
+            height = i.height.to_string(),
+            decoder = decoder,
+            audio = audio,
+        );
         self.show_osd(ctx, text, false);
     }
 
@@ -506,7 +566,7 @@ impl RvpApp {
             let tracks = &p.info().audio_tracks;
             let Some(cur) = p.audio_stream() else { return };
             if tracks.len() < 2 {
-                return self.show_osd(ctx, "音声トラックは 1 つだけです".into(), false);
+                return self.show_osd(ctx, t!("osd-single-audio-track"), false);
             }
             let i = tracks.iter().position(|t| t.stream == cur).map_or(0, |i| (i + 1) % tracks.len());
             TracksAction::Audio(tracks[i].stream)
@@ -526,11 +586,32 @@ impl RvpApp {
         }
         self.mark_config_dirty(ctx);
         let text = if muted {
-            "ミュート".to_owned()
+            t!("osd-muted")
         } else {
-            format!("音量 {:.0}%", self.config.volume * 100.0)
+            t!("volume-level", percent = format!("{:.0}", self.config.volume * 100.0))
         };
         self.show_osd(ctx, text, false);
+    }
+
+    /// Switches the UI language at run time (messages, fonts) and remembers it.
+    fn set_language(&mut self, ctx: &egui::Context, tag: &str) {
+        crate::i18n::set_language(tag);
+        crate::fonts::install(ctx, tag);
+        self.config.language = tag.to_owned();
+        self.mark_config_dirty(ctx);
+        let name = crate::i18n::available().into_iter().find(|l| l.tag == tag).map_or_else(|| tag.to_owned(), |l| l.name);
+        self.show_osd(ctx, t!("osd-language", name = name), false);
+    }
+
+    /// Picks up edits to user locale files (`~/.config/rvp/locales/*.ftl`) while running.
+    fn reload_locales(&mut self, ctx: &egui::Context) {
+        if !crate::i18n::has_user_files() {
+            return;
+        }
+        if crate::i18n::poll_reload() {
+            ctx.request_repaint();
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 
     fn set_speed(&mut self, ctx: &egui::Context, speed: f32) {
@@ -538,7 +619,7 @@ impl RvpApp {
         if let Some(p) = self.player.as_mut() {
             p.set_speed(self.speed);
         }
-        self.show_osd(ctx, format!("速度 {}", format_speed(self.speed)), false);
+        self.show_osd(ctx, t!("osd-speed", speed = format_speed(self.speed)), false);
     }
 
     fn toggle_fullscreen(ctx: &egui::Context) {
@@ -557,6 +638,11 @@ impl RvpApp {
                     DialogKind::Open | DialogKind::OpenFolder => self.open_paths(ctx, r.paths, false),
                     DialogKind::Append => self.open_paths(ctx, r.paths, true),
                     DialogKind::Subtitle => self.load_subtitles(ctx, r.paths),
+                    DialogKind::SavePlaylist => {
+                        if let Some(path) = r.paths.into_iter().next() {
+                            self.save_playlist(ctx, path);
+                        }
+                    }
                 }
             }
         }
@@ -597,7 +683,15 @@ impl RvpApp {
             self.last_activity = now;
         }
 
+        // The about dialog takes the keyboard (its search field, Esc to close).
+        if self.about.is_some() {
+            return;
+        }
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+
+        if key(Modifiers::NONE, Key::F1) {
+            self.about = Some(AboutState::default());
+        }
 
         if key(Modifiers::SHIFT, Key::O) {
             self.open_dialog(ctx, DialogKind::OpenFolder);
@@ -613,6 +707,9 @@ impl RvpApp {
         }
         if key(Modifiers::NONE, Key::V) {
             self.handle_tracks_action(ctx, TracksAction::ToggleVisible);
+        }
+        if key(Modifiers::CTRL, Key::S) {
+            self.save_playlist_dialog(ctx);
         }
         if key(Modifiers::NONE, Key::S) {
             self.cycle_track(ctx, false);
@@ -673,7 +770,7 @@ impl RvpApp {
         if let Some(p) = self.player.as_mut() {
             if key(Modifiers::NONE, Key::Space) {
                 p.toggle_pause();
-                osd = Some(if p.state() == PlayState::Playing { "再生" } else { "一時停止" }.to_owned());
+                osd = Some(t!(if p.state() == PlayState::Playing { "osd-play" } else { "osd-pause" }));
             }
             for (m, k, d) in [
                 (Modifiers::SHIFT, Key::ArrowLeft, -large),
@@ -683,7 +780,7 @@ impl RvpApp {
             ] {
                 if key(m, k) {
                     p.seek_relative(d);
-                    osd = Some(format!("{}{}秒", if d > 0.0 { "+" } else { "−" }, d.abs()));
+                    osd = Some(t!("osd-seek", sign = if d > 0.0 { "+" } else { "−" }, value = d.abs().to_string()));
                 }
             }
         }
@@ -769,19 +866,19 @@ impl RvpApp {
         p.text(
             center + vec2(0.0, 26.0),
             Align2::CENTER_CENTER,
-            "動画をドロップして再生",
+            &t!("empty-drop"),
             FontId::proportional(18.0),
             color::TEXT,
         );
 
         // Primary: open file(s). Secondary (outlined): open a folder.
         let buttons = [
-            (-94.0, icon::FILE_VIDEO, "ファイルを開く", DialogKind::Open, true),
-            (94.0, icon::FOLDER_OPEN, "フォルダを開く", DialogKind::OpenFolder, false),
+            (-94.0, icon::FILE_VIDEO, t!("empty-open-file"), DialogKind::Open, true),
+            (94.0, icon::FOLDER_OPEN, t!("empty-open-folder"), DialogKind::OpenFolder, false),
         ];
         for (dx, glyph, label, kind, primary) in buttons {
             let btn_rect = Rect::from_center_size(center + vec2(dx, 74.0), vec2(176.0, 38.0));
-            let resp = ui.interact(btn_rect, Id::new(("empty_open", label)), Sense::click());
+            let resp = ui.interact(btn_rect, Id::new(("empty_open", primary)), Sense::click());
             let radius = CornerRadius::same(size::BUTTON_RADIUS + 2);
             let p = ui.painter();
             let text_color = if primary {
@@ -807,7 +904,7 @@ impl RvpApp {
         p.text(
             center + vec2(0.0, 112.0),
             Align2::CENTER_CENTER,
-            "O でファイル、Shift+O でフォルダを開けます",
+            &t!("empty-hint"),
             FontId::proportional(12.5),
             color::TEXT_DIM,
         );
@@ -892,6 +989,7 @@ impl eframe::App for RvpApp {
         self.handle_input(&ctx);
         self.update_video(&ctx);
         self.persist(&ctx);
+        self.reload_locales(&ctx);
 
         let window = ui.max_rect();
         let (fullscreen, maximized, now) = ctx.input(|i| {
@@ -945,7 +1043,7 @@ impl eframe::App for RvpApp {
         // rests on the controls, a menu is open, or nothing is loaded.
         let over_chrome =
             hover_pos.is_some_and(|p| bar.expand(8.0).contains(p) || (self.show_playlist && panel.contains(p)));
-        let keep = self.player.is_none() || over_chrome || egui::Popup::is_any_open(&ctx);
+        let keep = self.player.is_none() || over_chrome || egui::Popup::is_any_open(&ctx) || self.about.is_some();
         let idle = now - self.last_activity;
         let visible = keep || idle < motion::HIDE_AFTER;
         if visible && !keep {
@@ -967,6 +1065,12 @@ impl eframe::App for RvpApp {
         }
         if tb.open_folder {
             self.open_dialog(&ctx, DialogKind::OpenFolder);
+        }
+        if let Some(tag) = tb.language {
+            self.set_language(&ctx, &tag);
+        }
+        if tb.about {
+            self.about = Some(AboutState::default());
         }
 
         // Subtitles sit above the video, below the chrome; they move up while the bar is shown.
@@ -1042,6 +1146,12 @@ impl eframe::App for RvpApp {
             for a in actions {
                 self.handle_playlist_action(&ctx, a);
             }
+        }
+
+        if let Some(state) = &mut self.about
+            && !about_ui::about_dialog(&ctx, window, f32::from(radius), state)
+        {
+            self.about = None;
         }
 
         self.paint_osd(ui, window);
@@ -1120,6 +1230,6 @@ fn paint_drop_hint(ui: &egui::Ui, window: Rect, radius: f32, alpha: f32, append:
     );
     let c = window.center();
     p.text(c - vec2(0.0, 22.0), Align2::CENTER_CENTER, icon::DOWNLOAD_SIMPLE, icon_font(42.0), color::ACCENT.gamma_multiply(alpha));
-    let label = if append { "ドロップしてプレイリストに追加" } else { "ドロップして再生" };
+    let label = t!(if append { "drop-append" } else { "drop-play" });
     p.text(c + vec2(0.0, 26.0), Align2::CENTER_CENTER, label, FontId::proportional(18.0), color::TEXT.gamma_multiply(alpha));
 }

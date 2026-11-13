@@ -1,4 +1,6 @@
+pub mod about;
 pub mod controls;
+pub mod language;
 pub mod playlist_panel;
 pub mod seekbar;
 pub mod speed;

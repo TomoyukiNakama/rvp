@@ -6,9 +6,14 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Build / run: `cargo build`, `cargo run -- <video>` (dev profile is optimized enough for real-time playback)
 - Test: `cargo test` (player integration test generates a clip via the `ffmpeg` CLI; skips if missing)
 - Test media: `scripts/gen-test-media.sh` → `target/test-media/`
+- After changing dependencies: `python3 scripts/gen-licenses.py` (regenerates `licenses/third-party.toml`; `--check` verifies)
 - `cargo test` does **not** rebuild `target/debug/rvp`; run `cargo build` before launching the app.
 - Keep manual runs out of the real config/state: `XDG_CONFIG_HOME=$TMPDIR/xdg/config XDG_STATE_HOME=$TMPDIR/xdg/state`.
   `RVP_DEBUG_PLAYLIST=1` starts with the playlist panel open, `RVP_DEBUG_SPEED=2` at 2× (for screenshots).
+  `RVP_DEBUG_POPUP=speed|tracks|language` opens that menu once at startup; `RVP_DEBUG_LANG=<tag>` overrides the UI language (not saved).
+  `RVP_DEBUG_ABOUT=license|software|<component name>` opens the about dialog (that tab / that component's details).
+- Clicks can't be screenshotted: test interactive widgets headlessly with synthetic `RawInput` events through
+  `Context::run_ui` (see `ui::playlist_panel::tests`; install the Phosphor font and clear `textures_delta`).
 - Screenshot without a compositor tool (grim doesn't work on GNOME/Wayland):
   `RVP_SCREENSHOT=out.png RVP_SCREENSHOT_AFTER=2 RVP_SCREENSHOT_EXIT=1 cargo run -- <video>` (see `src/debug_shot.rs`)
 
@@ -48,6 +53,8 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   WGSL gotcha: `layout` is a reserved word.
 - `app.rs` — `eframe::App`: input, playlist/auto-advance, resume, debounced config save, layout of chrome over the video.
 - `playlist.rs` — pure model (next/prev, repeat Off/All/One, shuffle order, natural sort, folder expansion). Unit-tested.
+  M3U/M3U8: `expand` turns playlist files into their entries (HLS manifests with `#EXT-X-` stay media); `write_m3u`
+  saves (panel button / Ctrl+S, entries under the playlist's folder are written relative).
 - `config.rs` — `Config` (`~/.config/rvp/config.toml`, `#[serde(default)]` so hand-edited/partial files load) and
   `ResumeStore` (`~/.local/state/rvp/resume.toml`, keyed by canonical path; skips first 10 s and the last min(15 s, 5%)).
   Writes are atomic (tmp + rename).
@@ -56,7 +63,18 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   drag-reorder via egui dnd payloads), `widgets.rs`. Subtitle overlay: `app.rs::paint_subtitle` (8-way outline).
 - `theme.rs` — design tokens (colors/sizes/motion) + egui style. Dark theme only. Use tokens, never ad-hoc colors.
   Translucent colors must use `from_rgba_unmultiplied_const` (premultiplied with rgb > a renders as additive white).
-- `fonts.rs` — CJK font via `fc-match`, Phosphor icon font (`ui::widgets::icon_font`).
+- Licensing: rvp is GPL-3.0-or-later (`LICENSE`; required by the GPL FFmpeg build). `about.rs` = data (crates from
+  the generated `licenses/third-party.toml`, hand-listed system libs, FFmpeg version/licence queried at run time);
+  `ui/about.rs` = "rvp について" modal (title-bar ⓘ / F1). New deps must be GPL-3-compatible.
+- `i18n.rs` — Project Fluent. Messages in `locales/<tag>.ftl` (embedded; `en.ftl` is the reference/fallback), looked up
+  with `t!("id", var = value)` (macro is `#[macro_use]`, usable in every module and thread). `set_language` switches at
+  run time; anything caching translated text keys on `i18n::generation()` (e.g. `about::components()`), otherwise
+  translate at draw time (e.g. `TrackInfo::label()`). First run: `detect()` from the OS locale, saved as `config.language`.
+  User `.ftl` files in `~/.config/rvp/locales/` override/add languages and are hot-reloaded (`poll_reload`).
+  New UI strings: add the id to **every** `locales/*.ftl` (`cargo test` checks ids and variables match `en.ftl`).
+  egui has no shaping/RTL, so no Thai/Indic/Arabic UI. Picker: `ui/language.rs` (title bar).
+- `fonts.rs` — UI font per language via `fc-match sans-serif:lang=<lang>` (+ Japanese CJK fallback for non-CJK
+  languages), re-installed on language switch; Phosphor icon font (`ui::widgets::icon_font`).
 
 ## Windowing gotchas (Wayland)
 - winit 0.30 has no Wayland drag-and-drop: `wayland_dnd.rs` joins winit's `wl_display` (`Backend::from_foreign_display`)
@@ -64,6 +82,9 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   Forcing X11 instead is not an option on NVIDIA: the X11 Vulkan surface has no transparent alpha mode (no rounded corners).
 - `StartDrag`/`BeginResize` hand the pointer to the compositor, which swallows the button release; `raw_input_hook`
   injects a release next frame (`inject_release`), otherwise egui keeps the drag "active" and the next drag fails.
+- Hover-revealed child buttons (e.g. playlist row ×): decide visibility by pointer position (`rect_contains_pointer`),
+  not the parent's `hovered()` — the child becomes the hovered widget and would vanish before the click lands.
+- Popup rows must use a fixed width (`Popup::width` + `set_width`); `available_width()` inside a popup is the parent's.
 - Anything painted at the window edges must respect the rounded corners (e.g. `window::rounded_top_gradient`).
 - Window follows the video aspect (`fit_window_to_video`): on open and after a manual resize settles (0.35 s), the
   height is snapped via `ViewportCommand::InnerSize` (capped at 90% of the monitor). Not while maximized/fullscreen.
@@ -71,6 +92,6 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   while hovering the control bar or playlist panel, while a popup is open, or with no file loaded.
 
 ## Conventions
-- UI strings are Japanese.
+- UI strings go through `t!` / `locales/*.ftl` — never hard-code user-visible text. Docs and SPEC are Japanese.
 - Window is borderless + transparent; the rounded window body is painted by us (`clear_color` is transparent). Corner radius is 0 when maximized/fullscreen.
 - Verify UI changes with a screenshot, not just a successful build.

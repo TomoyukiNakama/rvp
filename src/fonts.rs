@@ -1,44 +1,97 @@
-//! Font setup: a CJK system font (via fontconfig) plus Phosphor icons.
+//! Font setup: system fonts chosen per UI language (via fontconfig) plus Phosphor icons.
+//!
+//! The primary UI font is fontconfig's best sans-serif for the UI language, so e.g.
+//! Simplified Chinese gets SC glyph shapes and Korean a Hangul font. For non-CJK
+//! languages a Japanese CJK font is added as fallback (CJK file names, subtitles).
 
+use std::collections::HashMap;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use egui::{FontData, FontDefinitions, FontFamily};
 
-const CJK_KEY: &str = "system-cjk";
+/// Files of the system fonts in use (shown in the licence dialog).
+static IN_USE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-pub fn install(ctx: &egui::Context) {
+pub fn font_paths() -> Vec<String> {
+    IN_USE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// (Re)installs the fonts for the UI language `lang` (a BCP 47 tag).
+pub fn install(ctx: &egui::Context, lang: &str) {
     let mut fonts = FontDefinitions::default();
-
-    match find_cjk_font() {
-        Some((path, index)) => match std::fs::read(&path) {
-            Ok(bytes) => {
-                let mut data = FontData::from_owned(bytes);
-                data.index = index;
-                fonts.font_data.insert(CJK_KEY.into(), Arc::new(data));
-                // Primary UI font: covers Latin and Japanese consistently.
-                for family in [FontFamily::Proportional, FontFamily::Monospace] {
-                    let list = fonts.families.entry(family.clone()).or_default();
-                    let at = if family == FontFamily::Proportional { 0 } else { list.len() };
-                    list.insert(at, CJK_KEY.into());
-                }
-                log::info!("CJK font: {path} (index {index})");
-            }
-            Err(e) => log::warn!("failed to read font {path}: {e}"),
-        },
-        None => log::warn!("no CJK font found via fontconfig; Japanese text may not render"),
+    let fc = fc_lang(lang);
+    let mut queries = vec![format!("sans-serif:lang={fc}")];
+    if !is_cjk(&fc) {
+        queries.push("sans-serif:lang=ja".to_owned());
     }
+
+    let mut used = Vec::new();
+    for (i, query) in queries.iter().enumerate() {
+        let Some((path, index)) = fc_match(query) else {
+            log::warn!("fontconfig: nothing for {query}");
+            continue;
+        };
+        if used.contains(&path) {
+            continue;
+        }
+        let Some(data) = load(&path, index) else { continue };
+        let key = format!("system-{i}");
+        fonts.font_data.insert(key.clone(), data);
+        // Proportional: ours first (consistent Latin + script); monospace: fallback only.
+        let prop = fonts.families.entry(FontFamily::Proportional).or_default();
+        prop.insert(used.len().min(prop.len()), key.clone());
+        fonts.families.entry(FontFamily::Monospace).or_default().push(key);
+        log::info!("UI font for {lang} ({query}): {path} (index {index})");
+        used.push(path);
+    }
+    *IN_USE.lock().unwrap_or_else(|e| e.into_inner()) = used;
 
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
 }
 
-/// Asks fontconfig for the best Japanese sans-serif font.
-fn find_cjk_font() -> Option<(String, u32)> {
-    let out = Command::new("fc-match")
-        .args(["-f", "%{file}\n%{index}", "sans-serif:lang=ja"])
-        .output()
-        .ok()?;
+/// fontconfig language for a UI language tag.
+fn fc_lang(tag: &str) -> String {
+    let t = tag.to_ascii_lowercase();
+    match t.as_str() {
+        "zh-cn" | "zh-tw" | "zh-hk" => t,
+        _ if t.starts_with("zh-hant") => "zh-tw".into(),
+        _ if t.starts_with("zh") => "zh-cn".into(),
+        _ => t.split('-').next().unwrap_or("en").to_owned(),
+    }
+}
+
+fn is_cjk(fc: &str) -> bool {
+    fc == "ja" || fc == "ko" || fc.starts_with("zh")
+}
+
+/// Font files are large (CJK collections are ~20 MB): read each once.
+fn load(path: &str, index: u32) -> Option<Arc<FontData>> {
+    static CACHE: Mutex<Option<HashMap<(String, u32), Arc<FontData>>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(d) = cache.get(&(path.to_owned(), index)) {
+        return Some(d.clone());
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let mut data = FontData::from_owned(bytes);
+            data.index = index;
+            let data = Arc::new(data);
+            cache.insert((path.to_owned(), index), data.clone());
+            Some(data)
+        }
+        Err(e) => {
+            log::warn!("failed to read font {path}: {e}");
+            None
+        }
+    }
+}
+
+/// Asks fontconfig for the best match of `pattern`: (file, face index).
+fn fc_match(pattern: &str) -> Option<(String, u32)> {
+    let out = Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -47,4 +100,19 @@ fn find_cjk_font() -> Option<(String, u32)> {
     let file = lines.next()?.trim().to_owned();
     let index = lines.next().and_then(|i| i.trim().parse().ok()).unwrap_or(0);
     (!file.is_empty()).then_some((file, index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fontconfig_languages() {
+        assert_eq!(fc_lang("ja"), "ja");
+        assert_eq!(fc_lang("zh-CN"), "zh-cn");
+        assert_eq!(fc_lang("zh-TW"), "zh-tw");
+        assert_eq!(fc_lang("zh-Hant"), "zh-tw");
+        assert_eq!(fc_lang("pt-BR"), "pt");
+        assert!(is_cjk("ko") && !is_cjk("vi"));
+    }
 }

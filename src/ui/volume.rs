@@ -31,8 +31,8 @@ pub fn volume_control(ui: &mut Ui, volume: f32, muted: bool) -> VolumeActions {
     if let Some(v) = slider(ui, volume, muted) {
         a.set = Some(v);
     }
-    let tip = if muted { "ミュート解除 (M)" } else { "ミュート (M)" };
-    if icon_button(ui, speaker_icon(volume, muted), tip).clicked() {
+    let tip = t!(if muted { "volume-unmute" } else { "volume-mute" });
+    if icon_button(ui, speaker_icon(volume, muted), &tip).clicked() {
         a.toggle_mute = true;
     }
     a
@@ -92,6 +92,6 @@ fn slider(ui: &mut Ui, volume: f32, muted: bool) -> Option<f32> {
         p.circle_filled(c, 6.0 * t, egui::Color32::WHITE);
     }
 
-    resp.on_hover_text(format!("音量 {:.0}%", shown * 100.0));
+    resp.on_hover_text(t!("volume-level", percent = format!("{:.0}", shown * 100.0)));
     new
 }

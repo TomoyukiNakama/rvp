@@ -13,6 +13,9 @@ use crate::theme::{color, size};
 pub struct TitleBarActions {
     pub open: bool,
     pub open_folder: bool,
+    pub about: bool,
+    /// Newly chosen UI language.
+    pub language: Option<String>,
 }
 
 /// Vertical gradient (top → bottom colour) filling `rect` with its top corners
@@ -83,31 +86,37 @@ pub fn title_bar(ui: &mut Ui, window: Rect, title: &str, alpha: f32, fullscreen:
         ui.spacing_mut().item_spacing.x = 2.0;
         let ctx = ui.ctx().clone();
         if fullscreen {
-            if icon_button(ui, icon::CORNERS_IN, "フルスクリーン解除 (Esc)").clicked() {
+            if icon_button(ui, icon::CORNERS_IN, &t!("window-exit-fullscreen")).clicked() {
                 ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
             }
         } else {
-            if icon_button_ex(ui, icon::X, "閉じる", size::ICON_SIZE - 2.0, Some(color::CLOSE_HOVER)).clicked() {
+            if icon_button_ex(ui, icon::X, &t!("window-close"), size::ICON_SIZE - 2.0, Some(color::CLOSE_HOVER)).clicked() {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
             let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
             let (max_icon, tip) = if maximized {
-                (icon::COPY, "元のサイズに戻す")
+                (icon::COPY, t!("window-restore"))
             } else {
-                (icon::SQUARE, "最大化")
+                (icon::SQUARE, t!("window-maximize"))
             };
-            if icon_button_ex(ui, max_icon, tip, size::ICON_SIZE - 3.0, None).clicked() {
+            if icon_button_ex(ui, max_icon, &tip, size::ICON_SIZE - 3.0, None).clicked() {
                 ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
             }
-            if icon_button(ui, icon::MINUS, "最小化").clicked() {
+            if icon_button(ui, icon::MINUS, &t!("window-minimize")).clicked() {
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
             }
         }
         ui.add_space(4.0);
-        if icon_button(ui, icon::FOLDER_OPEN, "フォルダを開く (Shift+O)").clicked() {
+        if let Some(tag) = super::language::language_button(ui) {
+            actions.language = Some(tag);
+        }
+        if icon_button(ui, icon::INFO, &t!("window-about")).clicked() {
+            actions.about = true;
+        }
+        if icon_button(ui, icon::FOLDER_OPEN, &t!("window-open-folder")).clicked() {
             actions.open_folder = true;
         }
-        if icon_button(ui, icon::FILE_VIDEO, "ファイルを開く (O)").clicked() {
+        if icon_button(ui, icon::FILE_VIDEO, &t!("window-open-file")).clicked() {
             actions.open = true;
         }
     });

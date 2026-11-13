@@ -15,7 +15,7 @@ Rust と egui で作った、Linux 向けの動画プレイヤーです。
 - Rust（stable、edition 2024）
 - FFmpeg 8 の開発ライブラリ（`libavcodec-dev`、`libavformat-dev`、`libavfilter-dev`、`libswscale-dev`、`libswresample-dev`）
 - ALSA の開発ライブラリ（`libasound2-dev`）。PipeWire や PulseAudio の環境でも ALSA 経由で音が出る
-- 日本語の表示には fontconfig で見つかる CJK フォント（例：Noto Sans CJK）
+- 表示用のフォントは fontconfig で言語ごとに選ぶ。日本語・中国語・韓国語には CJK フォント（例：Noto Sans CJK）が必要
 
 ## 使い方
 
@@ -40,6 +40,7 @@ cargo run --release -- 動画.mkv [動画2.mp4 ...]
 | V / S / A | 字幕の表示切り替え / 字幕トラック / 音声トラック |
 | Z / X | 字幕を 0.1 秒早める / 遅らせる |
 | F、ダブルクリック、Esc | フルスクリーン / 解除 |
+| F1 | rvp について（ライセンスと使用しているソフトウェア） |
 | O / Shift+O | ファイルを開く / フォルダを開く |
 | I | メディア情報 |
 | Ctrl+H | ハードウェアデコードの切り替え |
@@ -70,4 +71,19 @@ cargo test                    # 単体テストと統合テスト（ffmpeg CLI �
 scripts/gen-test-media.sh     # 手動確認用のテスト動画を target/test-media/ に作る
 ```
 
+依存クレートを変えたら、ライセンス一覧（`licenses/third-party.toml`）を作り直してください。
+
+```bash
+python3 scripts/gen-licenses.py           # 再生成
+python3 scripts/gen-licenses.py --check   # 最新かどうかの確認
+```
+
 仕様は `SPEC.md`、開発メモは `CLAUDE.md` を参照してください。
+
+## ライセンス
+
+rvp は [GNU General Public License v3.0](LICENSE)（またはそれ以降のバージョン）で配布します。
+システムの FFmpeg（GPL ビルド）を動的リンクするため GPL にしています。
+
+使用しているソフトウェアとそのライセンスの一覧は、アプリの「rvp について」（タイトルバーの ⓘ ボタンか F1）で確認できます。
+クレートのライセンス本文は `licenses/third-party.toml` にあります。
