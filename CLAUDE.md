@@ -8,6 +8,10 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Test media: `scripts/gen-test-media.sh` → `target/test-media/`
 - README screenshots: `scripts/gen-readme-shots.sh` → `docs/images/{en,ja}-*.webp` (README.md = English, README.ja.md = Japanese; keep both in sync)
 - After changing dependencies: `python3 scripts/gen-licenses.py` (regenerates `licenses/third-party.toml`; `--check` verifies)
+  and `python3 flatpak/gen-cargo-sources.py` (vendored crate list for the offline Flatpak build; `--check` verifies)
+- Flatpak: `flatpak-builder --user --install --force-clean flatpak/build-dir flatpak/io.github.TomoyukiNakama.rvp.yml`,
+  then `flatpak run io.github.TomoyukiNakama.rvp`. Runtime 26.08 provides FFmpeg 8.1 (+ codecs-extra); app id comes from
+  `$FLATPAK_ID`. Config lives in `~/.var/app/<id>/config/rvp/` (`--env=XDG_CONFIG_HOME` is overridden by flatpak).
 - `cargo test` does **not** rebuild `target/debug/rvp`; run `cargo build` before launching the app.
 - Keep manual runs out of the real config/state: `XDG_CONFIG_HOME=$TMPDIR/xdg/config XDG_STATE_HOME=$TMPDIR/xdg/state`.
   `RVP_DEBUG_PLAYLIST=1` starts with the playlist panel open, `RVP_DEBUG_SPEED=2` at 2× (for screenshots).

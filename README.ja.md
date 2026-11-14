@@ -67,6 +67,21 @@ cargo run --release -- 動画.mkv [動画2.mp4 ...]
 
 ![起動画面](docs/images/ja-empty.webp)
 
+### Flatpak
+
+[`flatpak/`](flatpak) に Flatpak のマニフェストがあります。FFmpeg は freedesktop ランタイムのものを使うので、FFmpeg の開発用パッケージは要りません。
+サンドボックスの中でもハードウェアデコード（CUDA / VAAPI）が動きます。
+
+```bash
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak-builder --user --install --force-clean --install-deps-from=flathub \
+    flatpak/build-dir flatpak/io.github.TomoyukiNakama.rvp.yml
+flatpak run io.github.TomoyukiNakama.rvp 動画.mkv
+```
+
+Flatpak 版の設定ファイルは `~/.var/app/io.github.TomoyukiNakama.rvp/config/rvp/` にあります。サンドボックスからはすべてのファイルを読めますが
+（フォルダの再生と字幕の自動検出のため）、書き込みはファイル選択ダイアログ経由に限られます。
+
 ## キー操作
 
 | キー | 動作 |
@@ -131,6 +146,7 @@ scripts/gen-readme-shots.sh      # README のスクリーンショットを docs
 ```bash
 python3 scripts/gen-licenses.py           # 再生成
 python3 scripts/gen-licenses.py --check   # 最新かどうかの確認
+python3 flatpak/gen-cargo-sources.py      # Flatpak のオフラインビルド用のクレート一覧
 ```
 
 仕様は `SPEC.md`、開発メモは `CLAUDE.md` を参照してください。

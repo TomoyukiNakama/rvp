@@ -67,6 +67,21 @@ window loads it for the current video.
 
 ![Start screen](docs/images/en-empty.webp)
 
+### Flatpak
+
+A Flatpak manifest is in [`flatpak/`](flatpak). It uses FFmpeg from the freedesktop runtime, so no FFmpeg development
+packages are needed; hardware decoding (CUDA / VAAPI) works inside the sandbox.
+
+```bash
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak-builder --user --install --force-clean --install-deps-from=flathub \
+    flatpak/build-dir flatpak/io.github.TomoyukiNakama.rvp.yml
+flatpak run io.github.TomoyukiNakama.rvp video.mkv
+```
+
+Inside Flatpak the settings live in `~/.var/app/io.github.TomoyukiNakama.rvp/config/rvp/`. The sandbox can read
+all files (needed for folders and automatic subtitle detection) but writes only through the file chooser.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -132,6 +147,7 @@ After changing dependencies, regenerate the licence list (`licenses/third-party.
 ```bash
 python3 scripts/gen-licenses.py           # regenerate
 python3 scripts/gen-licenses.py --check   # verify it is up to date
+python3 flatpak/gen-cargo-sources.py      # crate list for the offline Flatpak build
 ```
 
 The specification is in `SPEC.md` and development notes are in `CLAUDE.md` (both partly in Japanese).

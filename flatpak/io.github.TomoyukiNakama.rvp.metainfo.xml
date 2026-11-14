@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.TomoyukiNakama.rvp</id>
+  <name>rvp</name>
+  <summary>Video player built with Rust and egui</summary>
+  <summary xml:lang="ja">Rust と egui で作った動画プレイヤー</summary>
+  <developer id="io.github.TomoyukiNakama">
+    <name>Tomoyuki Nakama</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <launchable type="desktop-id">io.github.TomoyukiNakama.rvp.desktop</launchable>
+  <url type="homepage">https://github.com/TomoyukiNakama/rvp</url>
+  <url type="bugtracker">https://github.com/TomoyukiNakama/rvp/issues</url>
+  <description>
+    <p>A simple video player with a borderless dark window whose controls fade away while you watch.</p>
+    <ul>
+      <li>Hardware decoding (CUDA / VAAPI) with automatic software fallback</li>
+      <li>Embedded and external subtitles (SRT, ASS, WebVTT) and audio track selection</li>
+      <li>Playlists with repeat, shuffle and drag-to-reorder; resume where you left off</li>
+      <li>Playback speed from 0.25× to 4× with pitch-preserving audio</li>
+      <li>User interface in 14 languages</li>
+    </ul>
+  </description>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Playing a video with subtitles</caption>
+      <image>https://raw.githubusercontent.com/TomoyukiNakama/rvp/main/docs/images/en-player.webp</image>
+    </screenshot>
+    <screenshot>
+      <caption>Subtitle and audio tracks</caption>
+      <image>https://raw.githubusercontent.com/TomoyukiNakama/rvp/main/docs/images/en-tracks.webp</image>
+    </screenshot>
+    <screenshot>
+      <caption>Playlist</caption>
+      <image>https://raw.githubusercontent.com/TomoyukiNakama/rvp/main/docs/images/en-playlist.webp</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-11-14"/>
+  </releases>
+</component>

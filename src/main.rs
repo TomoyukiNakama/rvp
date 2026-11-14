@@ -46,7 +46,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("rvp")
-            .with_app_id("rvp")
+            // Wayland app id = desktop file id, so the shell shows the right icon/name
+            // (Flatpak installs the desktop file as <FLATPAK_ID>.desktop).
+            .with_app_id(std::env::var("FLATPAK_ID").unwrap_or_else(|_| "rvp".to_owned()))
             .with_inner_size([1280.0, 720.0])
             .with_min_inner_size([480.0, 300.0])
             .with_decorations(false)

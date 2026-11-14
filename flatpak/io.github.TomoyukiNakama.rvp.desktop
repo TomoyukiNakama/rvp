@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=rvp
+GenericName=Video Player
+GenericName[ja]=動画プレイヤー
+Comment=Play videos with subtitles, playlists and hardware decoding
+Comment[ja]=字幕・プレイリスト・ハードウェアデコードに対応した動画プレイヤー
+Icon=io.github.TomoyukiNakama.rvp
+Exec=rvp %F
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=video;movie;player;subtitles;playlist;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/mpeg;video/mp2t;video/ogg;video/x-flv;video/3gpp;audio/x-mpegurl;application/vnd.apple.mpegurl;
+StartupWMClass=rvp

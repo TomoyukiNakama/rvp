@@ -1,0 +1,58 @@
+# Flatpak manifest for rvp.
+#
+# Build and install locally (from the repository root):
+#   flatpak-builder --user --install --force-clean flatpak/build-dir flatpak/io.github.TomoyukiNakama.rvp.yml
+#   flatpak run io.github.TomoyukiNakama.rvp [video]
+#
+# FFmpeg comes from the freedesktop runtime (26.08 ships FFmpeg 8.x; the automatically
+# installed org.freedesktop.Platform.codecs-extra extension adds H.264/HEVC etc.).
+# Rust crates are vendored from flatpak/cargo-sources.json (no network during the build):
+# re-run `python3 flatpak/gen-cargo-sources.py` after changing Cargo.lock.
+
+id: io.github.TomoyukiNakama.rvp
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm22
+command: rvp
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Audio: cpal uses ALSA, which the runtime routes to PulseAudio/PipeWire.
+  - --socket=pulseaudio
+  # GPU: /dev/dri for Vulkan and VAAPI; NVIDIA (Vulkan, CUDA decoding) needs /dev/nvidia*.
+  - --device=all
+  # Read-only access to files anywhere: rvp opens the dropped/given path directly, queues the
+  # other videos of a folder and looks for subtitle files next to the video. Writing (saving
+  # a playlist) goes through the file chooser portal.
+  - --filesystem=host:ro
+
+modules:
+  - name: rvp
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
+      env:
+        CARGO_HOME: /run/build/rvp/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # bindgen (ffmpeg-sys-next) needs libclang.
+        LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+    build-commands:
+      - cargo build --release --locked --offline
+      - install -Dm755 target/release/rvp /app/bin/rvp
+      - install -Dm644 flatpak/io.github.TomoyukiNakama.rvp.desktop -t /app/share/applications
+      - install -Dm644 flatpak/io.github.TomoyukiNakama.rvp.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 flatpak/io.github.TomoyukiNakama.rvp.svg -t /app/share/icons/hicolor/scalable/apps
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - .flatpak-builder
+          - flatpak/build-dir
+          - flatpak/repo
+      - cargo-sources.json
