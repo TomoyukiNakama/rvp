@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context as _, anyhow};
+use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ffmpeg_next as ffmpeg;
 
@@ -44,6 +44,11 @@ const FRAME_QUEUE: usize = 6;
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
     pub title: String,
+    /// Tag metadata (mostly music files).
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// `false` for audio-only files (cover art doesn't count as video).
+    pub has_video: bool,
     pub duration: Option<f64>,
     pub width: u32,
     pub height: u32,
@@ -219,6 +224,98 @@ pub struct Player {
     hw_device: Option<String>,
     hw_active: bool,
     error: Option<String>,
+    /// Embedded cover art of an audio-only file, until taken by the UI.
+    cover: Option<VideoFrame>,
+}
+
+struct VideoSetup {
+    index: usize,
+    time_base: f64,
+    frame_duration: f64,
+    stream_sar: Option<f64>,
+    decoder: ffmpeg::decoder::Video,
+    hw_device: Option<String>,
+    params: ffmpeg::codec::Parameters,
+}
+
+fn is_cover_art(stream: &ffmpeg::format::stream::Stream<'_>) -> bool {
+    stream.disposition().contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC)
+}
+
+/// The main video stream. Cover art (attached pictures in music files) is not video.
+fn best_video(input: &ffmpeg::format::context::Input) -> Option<usize> {
+    let best = input.streams().best(ffmpeg::media::Type::Video);
+    if let Some(s) = best.filter(|s| !is_cover_art(s)) {
+        return Some(s.index());
+    }
+    input
+        .streams()
+        .find(|s| s.parameters().medium() == ffmpeg::media::Type::Video && !is_cover_art(s))
+        .map(|s| s.index())
+}
+
+fn open_video(input: &ffmpeg::format::context::Input, index: usize, hwdec: HwDec) -> anyhow::Result<VideoSetup> {
+    let stream = input.stream(index).context("video stream")?;
+    let tb = stream.time_base();
+    let fps = stream.avg_frame_rate();
+    let frame_duration = if fps.numerator() > 0 && fps.denominator() > 0 {
+        f64::from(fps.denominator()) / f64::from(fps.numerator())
+    } else {
+        1.0 / 30.0
+    };
+
+    // SAFETY: plain field read on a valid stream.
+    let stream_sar = unsafe { (*stream.as_ptr()).sample_aspect_ratio };
+    let stream_sar = (stream_sar.num > 0 && stream_sar.den > 0)
+        .then(|| f64::from(stream_sar.num) / f64::from(stream_sar.den));
+
+    let params = stream.parameters();
+    let mut codec_ctx = ffmpeg::codec::context::Context::from_parameters(params.clone())?;
+    let hw_device = hwaccel::attach(&mut codec_ctx, hwdec);
+    let decoder = match &hw_device {
+        // Hardware: a single decode thread is enough (and keeps the surface pool small).
+        Some(name) => match codec_ctx.decoder().video() {
+            Ok(d) => Ok(d),
+            Err(e) => {
+                log::warn!("hwdec {name}: open failed ({e}), using software");
+                video_decode::open_sw_decoder(params.clone())
+            }
+        },
+        None => video_decode::open_sw_decoder(params.clone()),
+    }
+    .with_context(|| t!("error-video-decoder"))?;
+    Ok(VideoSetup {
+        index,
+        time_base: f64::from(tb.numerator()) / f64::from(tb.denominator()),
+        frame_duration,
+        stream_sar,
+        decoder,
+        hw_device,
+        params,
+    })
+}
+
+/// Decodes the embedded cover art (ID3 APIC, FLAC picture, MP4 `covr`…), if any.
+fn decode_cover(input: &ffmpeg::format::context::Input) -> Option<VideoFrame> {
+    let stream = input.streams().find(|s| is_cover_art(s))?;
+    // SAFETY: `attached_pic` is a packet owned by the stream; only its data is read here.
+    let data = unsafe {
+        let pkt = &(*stream.as_ptr()).attached_pic;
+        if pkt.data.is_null() || pkt.size <= 0 {
+            return None;
+        }
+        std::slice::from_raw_parts(pkt.data, pkt.size as usize)
+    };
+    let packet = ffmpeg::Packet::copy(data);
+    let mut decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        .and_then(|c| c.decoder().video())
+        .map_err(|e| log::warn!("cover art decoder: {e}"))
+        .ok()?;
+    decoder.send_packet(&packet).ok()?;
+    let _ = decoder.send_eof();
+    let mut decoded = ffmpeg::frame::Video::empty();
+    decoder.receive_frame(&mut decoded).ok()?;
+    frame::FrameConverter::default().make(decoded, 0, 0.0, 0.0, None)
 }
 
 struct AudioSetup {
@@ -249,40 +346,11 @@ impl Player {
         let input = ffmpeg::format::input(path)
             .with_context(|| t!("error-open-file", path = path.display().to_string()))?;
 
-        let stream = input
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or_else(|| anyhow!(t!("error-no-video-stream")))?;
-        let video_index = stream.index();
-        let tb = stream.time_base();
-        let time_base = f64::from(tb.numerator()) / f64::from(tb.denominator());
-        let fps = stream.avg_frame_rate();
-        let frame_duration = if fps.numerator() > 0 && fps.denominator() > 0 {
-            f64::from(fps.denominator()) / f64::from(fps.numerator())
-        } else {
-            1.0 / 30.0
+        let video = match best_video(&input) {
+            Some(index) => Some(open_video(&input, index, hwdec)?),
+            None => None,
         };
-
-        // SAFETY: plain field read on a valid stream.
-        let stream_sar = unsafe { (*stream.as_ptr()).sample_aspect_ratio };
-        let stream_sar = (stream_sar.num > 0 && stream_sar.den > 0)
-            .then(|| f64::from(stream_sar.num) / f64::from(stream_sar.den));
-
-        let params = stream.parameters();
-        let mut codec_ctx = ffmpeg::codec::context::Context::from_parameters(params.clone())?;
-        let hw_device = hwaccel::attach(&mut codec_ctx, hwdec);
-        let decoder = match &hw_device {
-            // Hardware: a single decode thread is enough (and keeps the surface pool small).
-            Some(name) => match codec_ctx.decoder().video() {
-                Ok(d) => Ok(d),
-                Err(e) => {
-                    log::warn!("hwdec {name}: open failed ({e}), using software");
-                    video_decode::open_sw_decoder(params.clone())
-                }
-            },
-            None => video_decode::open_sw_decoder(params.clone()),
-        }
-        .with_context(|| t!("error-video-decoder"))?;
+        let cover = if video.is_none() { decode_cover(&input) } else { None };
 
         let (audio_setup, audio_error) = match audio.map(|_| setup_audio(&input)).transpose() {
             Ok(a) => (a.flatten(), None),
@@ -291,6 +359,10 @@ impl Player {
                 (None, Some(t!("error-audio-playback", error = format!("{e:#}"))))
             }
         };
+        if video.is_none() && audio_setup.is_none() {
+            anyhow::bail!(audio_error.unwrap_or_else(|| t!("error-no-playable-stream")));
+        }
+        let has_video = video.is_some();
 
         // SAFETY: plain field reads on a valid, opened AVFormatContext.
         let (start_time, duration) = unsafe {
@@ -340,22 +412,25 @@ impl Player {
             _ => None,
         };
 
+        let tag = |key: &str| {
+            let meta = input.metadata();
+            meta.get(key).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)
+        };
         let info = MediaInfo {
-            title: input
-                .metadata()
-                .get("title")
-                .map(str::to_owned)
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                }),
+            title: tag("title").unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            }),
+            artist: tag("artist").or_else(|| tag("album_artist")),
+            album: tag("album"),
+            has_video,
             duration,
-            width: decoder.width(),
-            height: decoder.height(),
-            codec: decoder
-                .codec()
+            width: video.as_ref().map_or(0, |v| v.decoder.width()),
+            height: video.as_ref().map_or(0, |v| v.decoder.height()),
+            codec: video
+                .as_ref()
+                .and_then(|v| v.decoder.codec())
                 .map(|c| c.name().to_owned())
                 .unwrap_or_default(),
             audio_codec: audio_setup
@@ -369,6 +444,7 @@ impl Player {
         let serial = Arc::new(AtomicU64::new(base));
         let (cmd_tx, cmd_rx) = unbounded();
         let (video_tx, video_rx) = bounded(PACKET_QUEUE);
+        let video_tx = has_video.then_some(video_tx);
         let (frame_tx, frame_rx) = bounded(FRAME_QUEUE);
         let (event_tx, event_rx) = unbounded();
 
@@ -380,7 +456,8 @@ impl Player {
                     q.chunks.clear();
                     q.queued_frames = 0;
                     q.clock = None;
-                    q.hold = true;
+                    // With video, audio waits for the first frame; audio-only starts at once.
+                    q.hold = has_video;
                     q.paused = false;
                     q.speed = 1.0;
                 }
@@ -407,7 +484,7 @@ impl Player {
         thread::Builder::new().name("rvp-demux".into()).spawn({
             let ctx = demux::DemuxCtx {
                 input,
-                video_index,
+                video_index: video.as_ref().map(|v| v.index),
                 start_time,
                 cmd_rx,
                 video_tx,
@@ -418,24 +495,27 @@ impl Player {
             };
             move || demux::run(ctx)
         })?;
-        thread::Builder::new().name("rvp-vdec".into()).spawn({
-            let ctx = video_decode::VideoDecodeCtx {
-                decoder,
-                time_base,
-                start_time,
-                frame_duration,
-                stream_sar,
-                serial: serial.clone(),
-                pkt_rx: video_rx,
-                frame_tx,
-                event_tx,
-                repaint,
-                initial_serial: base,
-                hw: hw_device.is_some(),
-                params,
-            };
-            move || video_decode::run(ctx)
-        })?;
+        let hw_device = video.as_ref().and_then(|v| v.hw_device.clone());
+        if let Some(v) = video {
+            thread::Builder::new().name("rvp-vdec".into()).spawn({
+                let ctx = video_decode::VideoDecodeCtx {
+                    decoder: v.decoder,
+                    time_base: v.time_base,
+                    start_time,
+                    frame_duration: v.frame_duration,
+                    stream_sar: v.stream_sar,
+                    serial: serial.clone(),
+                    pkt_rx: video_rx,
+                    frame_tx,
+                    event_tx,
+                    repaint,
+                    initial_serial: base,
+                    hw: v.hw_device.is_some(),
+                    params: v.params,
+                };
+                move || video_decode::run(ctx)
+            })?;
+        }
 
         log::info!(
             "opened {} ({} {}x{}, audio {:?}, {:?}s)",
@@ -473,6 +553,7 @@ impl Player {
             hw_device,
             hw_active: false,
             error: audio_error,
+            cover,
         })
     }
 
@@ -608,6 +689,11 @@ impl Player {
         &self.info
     }
 
+    /// Cover art of an audio-only file (returned once).
+    pub fn take_cover(&mut self) -> Option<VideoFrame> {
+        self.cover.take()
+    }
+
     pub fn state(&self) -> PlayState {
         self.state
     }
@@ -688,7 +774,7 @@ impl Player {
             q.chunks.clear();
             q.queued_frames = 0;
             q.clock = None;
-            q.hold = true;
+            q.hold = self.info.has_video;
             q.paused = self.state != PlayState::Playing;
         }
         let _ = self.cmd_tx.send(DemuxCmd::Seek {
@@ -724,6 +810,18 @@ impl Player {
                     self.error = Some(t!("error-hw-fallback"));
                     self.reseek();
                 }
+            }
+        }
+
+        // Audio-only: the first audible sample after open/seek anchors the clock.
+        if !self.info.has_video && self.waiting_first_frame && self.state == PlayState::Playing {
+            if let Some(t) = self.audio.as_ref().and_then(|a| a.audible_time(serial)) {
+                self.waiting_first_frame = false;
+                self.clock.set(t);
+            } else if self.audio_drained() {
+                // Nothing left to play after the seek target.
+                self.waiting_first_frame = false;
+                self.clock.set(self.seek_target);
             }
         }
 
@@ -766,7 +864,10 @@ impl Player {
             self.last_shown_end = f.pts + f.duration;
         }
 
-        if self.eof
+        if !self.info.has_video {
+            self.last_shown_end = self.clock.time();
+        }
+        if (self.eof || !self.info.has_video)
             && self.state == PlayState::Playing
             && self.pending.is_none()
             && self.frame_rx.is_empty()
@@ -793,6 +894,10 @@ impl Player {
     pub fn next_wakeup(&self) -> Option<Duration> {
         if self.state != PlayState::Playing {
             return None;
+        }
+        if !self.info.has_video {
+            // Only the seek bar and time need refreshing.
+            return Some(Duration::from_millis(if self.waiting_first_frame { 10 } else { 50 }));
         }
         let wait = match &self.pending {
             Some(f) if !self.waiting_first_frame => {
@@ -1169,5 +1274,69 @@ mod tests {
         p.play();
         let f = next_frame(&mut p);
         assert!(f.pts.abs() < 0.05, "restart pts {}", f.pts);
+    }
+
+    /// 4 s 44.1 kHz tone as MP3 with an embedded 200×200 PNG cover (ID3 APIC).
+    fn sample_audio_with_cover() -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("rvp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("sample_cover.mp3");
+        if !path.exists() {
+            let ok = Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=4"])
+                .args(["-f", "lavfi", "-i", "color=c=red:size=200x200:duration=0.04:rate=25"])
+                .args(["-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-c:v", "png"])
+                .args(["-disposition:v", "attached_pic", "-id3v2_version", "3"])
+                .args(["-metadata", "title=Tone", "-metadata", "artist=rvp"])
+                .arg(&path)
+                .status()
+                .ok()?
+                .success();
+            if !ok {
+                return None;
+            }
+        }
+        Some(path)
+    }
+
+    #[test]
+    fn audio_only_file_plays_to_end() {
+        init().unwrap();
+        let Some(path) = sample_audio_with_cover() else {
+            eprintln!("ffmpeg CLI (with libmp3lame) not available; skipping");
+            return;
+        };
+        // Without an audio device there is nothing to play.
+        assert!(Player::open(&path, egui::Context::default(), None, HwDec::Off).is_err());
+
+        let dev = match AudioDevice::open() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no audio output device; skipping ({e:#})");
+                return;
+            }
+        };
+        let mut p = Player::open(&path, egui::Context::default(), Some(&dev), HwDec::Auto).unwrap();
+        let info = p.info().clone();
+        assert!(!info.has_video, "cover art must not count as video");
+        assert_eq!(info.title, "Tone");
+        assert_eq!(info.artist.as_deref(), Some("rvp"));
+        let cover = p.take_cover().expect("cover art");
+        assert_eq!((cover.planes[0].width, cover.planes[0].height), (200, 200));
+
+        // The clock follows the audio.
+        run_for(&mut p, 1.0);
+        assert!(p.update().is_none(), "audio-only never yields video frames");
+        let pos = p.position();
+        assert!((0.6..1.4).contains(&pos), "position after 1 s: {pos}");
+
+        p.seek(3.0, true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while p.state() != PlayState::Ended {
+            p.update();
+            assert!(Instant::now() < deadline, "never reached Ended (pos {})", p.position());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(p.position() > 3.5, "end position {}", p.position());
     }
 }

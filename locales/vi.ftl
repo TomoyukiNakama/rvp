@@ -30,7 +30,7 @@ volume-mute = Tắt tiếng (M)
 volume-unmute = Bật tiếng (M)
 volume-level = Âm lượng { $percent }%
 repeat-off = Lặp: tắt
-repeat-one = Lặp: video này
+repeat-one = Lặp: mục này
 repeat-all = Lặp: cả danh sách phát
 shuffle-on = Ngẫu nhiên: bật
 shuffle-off = Ngẫu nhiên: tắt
@@ -76,7 +76,7 @@ playlist-empty-hint = Thả tệp vào đây để thêm
 
 ## Empty window / drag and drop
 
-empty-drop = Thả video vào để phát
+empty-drop = Thả video hoặc âm thanh vào để phát
 empty-open-file = Mở tệp
 empty-open-folder = Mở thư mục
 empty-hint = Nhấn O để mở tệp, Shift+O để mở thư mục
@@ -85,12 +85,12 @@ drop-play = Thả để phát
 
 ## File dialogs
 
-dialog-open-video = Mở video
+dialog-open-media = Mở tệp
 dialog-open-folder = Mở thư mục
 dialog-add-to-playlist = Thêm vào danh sách phát
 dialog-save-playlist = Lưu danh sách phát
 dialog-load-subtitle = Tải tệp phụ đề
-dialog-filter-media = Video và danh sách phát
+dialog-filter-media = Tệp đa phương tiện và danh sách phát
 dialog-filter-playlist = Danh sách phát
 dialog-filter-subtitles = Phụ đề
 dialog-filter-all = Tất cả tệp
@@ -104,13 +104,13 @@ osd-muted = Đã tắt tiếng
 osd-speed = Tốc độ { $speed }
 osd-language = Ngôn ngữ: { $name }
 osd-added = Đã thêm { $count } mục vào danh sách phát
-osd-no-playable = Không tìm thấy video có thể phát
+osd-no-playable = Không tìm thấy tệp có thể phát
 osd-resumed = Tiếp tục từ vị trí lần trước ({ $time })
 osd-playlist-end = Đã hết danh sách phát
 osd-playlist-empty = Danh sách phát trống
 osd-playlist-saved = Đã lưu danh sách phát: { $name }
 osd-playlist-save-failed = Không thể lưu danh sách phát: { $error }
-osd-open-video-first = Hãy mở video trước
+osd-open-video-first = Hãy mở tệp trước
 osd-subtitle-loaded = Phụ đề: { $name } ({ $count } dòng)
 osd-audio-track = Âm thanh: { $label }
 osd-subtitle-track = Phụ đề: { $label }
@@ -123,6 +123,7 @@ osd-single-audio-track = Chỉ có một luồng âm thanh
 osd-media-info =
     Video: { $codec } { $width }×{ $height } · Bộ giải mã: { $decoder }
     Âm thanh: { $audio }
+osd-media-info-audio = Âm thanh: { $audio }
 media-info-software = phần mềm
 media-info-none = không có
 
@@ -134,7 +135,7 @@ error-audio-config = Không thể lấy cấu hình đầu ra âm thanh
 error-sample-format = Định dạng mẫu không được hỗ trợ: { $format }
 error-audio-start = Không thể khởi động đầu ra âm thanh
 error-open-file = Không thể mở: { $path }
-error-no-video-stream = Không tìm thấy luồng video
+error-no-playable-stream = Không tìm thấy luồng video hoặc âm thanh có thể phát
 error-video-decoder = Không thể mở bộ giải mã video
 error-audio-decoder = Không thể mở bộ giải mã âm thanh
 error-decoder-open = Không thể mở bộ giải mã: { $error }

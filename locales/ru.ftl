@@ -30,7 +30,7 @@ volume-mute = Выключить звук (M)
 volume-unmute = Включить звук (M)
 volume-level = Громкость { $percent }%
 repeat-off = Повтор: выкл.
-repeat-one = Повтор: это видео
+repeat-one = Повтор: этот элемент
 repeat-all = Повтор: весь плейлист
 shuffle-on = Перемешивание: вкл.
 shuffle-off = Перемешивание: выкл.
@@ -77,7 +77,7 @@ playlist-empty-hint = Перетащите файлы сюда, чтобы до�
 
 ## Empty window / drag and drop
 
-empty-drop = Перетащите видео, чтобы воспроизвести
+empty-drop = Перетащите видео или аудио, чтобы воспроизвести
 empty-open-file = Открыть файл
 empty-open-folder = Открыть папку
 empty-hint = Нажмите O, чтобы открыть файл, или Shift+O, чтобы открыть папку
@@ -86,12 +86,12 @@ drop-play = Отпустите, чтобы воспроизвести
 
 ## File dialogs
 
-dialog-open-video = Открыть видео
+dialog-open-media = Открыть файл
 dialog-open-folder = Открыть папку
 dialog-add-to-playlist = Добавить в плейлист
 dialog-save-playlist = Сохранить плейлист
 dialog-load-subtitle = Загрузить файл субтитров
-dialog-filter-media = Видео и плейлисты
+dialog-filter-media = Медиафайлы и плейлисты
 dialog-filter-playlist = Плейлисты
 dialog-filter-subtitles = Субтитры
 dialog-filter-all = Все файлы
@@ -112,13 +112,13 @@ osd-added =
         [many] В плейлист добавлено { $count } элементов
        *[other] В плейлист добавлено { $count } элемента
     }
-osd-no-playable = Воспроизводимые видео не найдены
+osd-no-playable = Воспроизводимые файлы не найдены
 osd-resumed = Продолжено с последней позиции ({ $time })
 osd-playlist-end = Конец плейлиста
 osd-playlist-empty = Плейлист пуст
 osd-playlist-saved = Плейлист сохранён: { $name }
 osd-playlist-save-failed = Не удалось сохранить плейлист: { $error }
-osd-open-video-first = Сначала откройте видео
+osd-open-video-first = Сначала откройте файл
 osd-subtitle-loaded =
     { $count ->
         [one] Субтитры: { $name } ({ $count } реплика)
@@ -137,6 +137,7 @@ osd-single-audio-track = Есть только одна звуковая дор�
 osd-media-info =
     Видео: { $codec } { $width }×{ $height } · Декодер: { $decoder }
     Звук: { $audio }
+osd-media-info-audio = Звук: { $audio }
 media-info-software = программный
 media-info-none = нет
 
@@ -148,7 +149,7 @@ error-audio-config = Не удалось получить конфигураци
 error-sample-format = Неподдерживаемый формат сэмплов: { $format }
 error-audio-start = Не удалось запустить вывод звука
 error-open-file = Не удалось открыть: { $path }
-error-no-video-stream = Видеопоток не найден
+error-no-playable-stream = Не найден воспроизводимый видео- или аудиопоток
 error-video-decoder = Не удалось открыть видеодекодер
 error-audio-decoder = Не удалось открыть аудиодекодер
 error-decoder-open = Не удалось открыть декодер: { $error }

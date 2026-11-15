@@ -30,7 +30,7 @@ volume-mute = Wycisz (M)
 volume-unmute = Włącz dźwięk (M)
 volume-level = Głośność { $percent }%
 repeat-off = Powtarzanie: wyłączone
-repeat-one = Powtarzanie: ten film
+repeat-one = Powtarzanie: ten element
 repeat-all = Powtarzanie: cała lista
 shuffle-on = Losowo: włączone
 shuffle-off = Losowo: wyłączone
@@ -77,7 +77,7 @@ playlist-empty-hint = Upuść pliki tutaj, aby je dodać
 
 ## Empty window / drag and drop
 
-empty-drop = Upuść film, aby go odtworzyć
+empty-drop = Upuść plik wideo lub audio, aby go odtworzyć
 empty-open-file = Otwórz plik
 empty-open-folder = Otwórz folder
 empty-hint = Naciśnij O, aby otworzyć plik, lub Shift+O, aby otworzyć folder
@@ -86,12 +86,12 @@ drop-play = Upuść, aby odtworzyć
 
 ## File dialogs
 
-dialog-open-video = Otwórz film
+dialog-open-media = Otwórz plik
 dialog-open-folder = Otwórz folder
 dialog-add-to-playlist = Dodaj do listy odtwarzania
 dialog-save-playlist = Zapisz listę odtwarzania
 dialog-load-subtitle = Wczytaj plik napisów
-dialog-filter-media = Filmy i listy odtwarzania
+dialog-filter-media = Pliki multimedialne i listy odtwarzania
 dialog-filter-playlist = Listy odtwarzania
 dialog-filter-subtitles = Napisy
 dialog-filter-all = Wszystkie pliki
@@ -112,13 +112,13 @@ osd-added =
         [many] Dodano { $count } elementów do listy
        *[other] Dodano { $count } elementu do listy
     }
-osd-no-playable = Nie znaleziono filmów do odtworzenia
+osd-no-playable = Nie znaleziono plików do odtworzenia
 osd-resumed = Wznowiono od ostatniej pozycji ({ $time })
 osd-playlist-end = Koniec listy odtwarzania
 osd-playlist-empty = Lista odtwarzania jest pusta
 osd-playlist-saved = Zapisano listę: { $name }
 osd-playlist-save-failed = Nie można zapisać listy: { $error }
-osd-open-video-first = Najpierw otwórz film
+osd-open-video-first = Najpierw otwórz plik
 osd-subtitle-loaded =
     { $count ->
         [one] Napisy: { $name } (1 wpis)
@@ -137,6 +137,7 @@ osd-single-audio-track = Dostępna jest tylko jedna ścieżka dźwiękowa
 osd-media-info =
     Wideo: { $codec } { $width }×{ $height } · Dekoder: { $decoder }
     Dźwięk: { $audio }
+osd-media-info-audio = Dźwięk: { $audio }
 media-info-software = programowy
 media-info-none = brak
 
@@ -148,7 +149,7 @@ error-audio-config = Nie można pobrać konfiguracji wyjścia audio
 error-sample-format = Nieobsługiwany format próbek: { $format }
 error-audio-start = Nie można uruchomić wyjścia audio
 error-open-file = Nie można otworzyć: { $path }
-error-no-video-stream = Nie znaleziono strumienia wideo
+error-no-playable-stream = Nie znaleziono strumienia wideo ani audio do odtworzenia
 error-video-decoder = Nie można otworzyć dekodera wideo
 error-audio-decoder = Nie można otworzyć dekodera audio
 error-decoder-open = Nie można otworzyć dekodera: { $error }

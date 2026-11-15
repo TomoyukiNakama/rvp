@@ -2,7 +2,7 @@
 
 [English](README.md) | **日本語**
 
-Rust と [egui](https://github.com/emilk/egui) で作った、Linux 向けの動画プレイヤーです。
+Rust と [egui](https://github.com/emilk/egui) で作った、Linux 向けの動画・音楽プレイヤーです。
 
 ![字幕つきで動画を再生している rvp](docs/images/ja-player.webp)
 
@@ -28,6 +28,13 @@ Shift_JIS も自動で判別します。字幕のタイミングは 0.1 秒単�
 フォルダを開くと中の動画をすべて再生します。リピート（1 本 / 全体）、シャッフル、ドラッグでの並べ替え、M3U8 での保存ができます。
 
 ![プレイリストのパネル](docs/images/ja-playlist.webp)
+
+### 音楽などの音声ファイル
+
+映像のない音声ファイル（MP3、FLAC、Ogg/Opus、M4A、WAV など）も再生できます。埋め込まれたジャケット画像と、曲名・アーティスト・
+アルバムを表示します。フォルダやプレイリストに動画と音楽が混ざっていてもかまいません。
+
+![ジャケット画像つきで FLAC を再生している画面](docs/images/ja-audio.webp)
 
 ### 再生速度
 
@@ -59,10 +66,10 @@ UI の言語は、初回起動時に OS の言語設定から選ばれ、タイ�
 ## 使い方
 
 ```bash
-cargo run --release -- 動画.mkv [動画2.mp4 ...]
+cargo run --release -- 動画.mkv [曲.flac ...]
 ```
 
-ファイルを開くとそのファイルだけ、フォルダを開くと中の動画をすべて再生します。字幕ファイルをウィンドウにドロップすると、
+ファイルを開くとそのファイルだけ、フォルダを開くと中の動画と音声ファイルをすべて再生します。字幕ファイルをウィンドウにドロップすると、
 再生中の動画の字幕として読み込みます。
 
 ![起動画面](docs/images/ja-empty.webp)
@@ -92,7 +99,7 @@ Flatpak 版の設定ファイルは `~/.var/app/io.github.TomoyukiNakama.rvp/con
 | M | ミュート |
 | `[` / `]`、Backspace | 再生速度を下げる / 上げる、等速に戻す |
 | N / B | 次 / 前の項目 |
-| L | ループ（オフ → この動画 → プレイリスト全体） |
+| L | ループ（オフ → この項目 → プレイリスト全体） |
 | P | プレイリスト |
 | V / S / A | 字幕の表示切り替え / 字幕トラック / 音声トラック |
 | Z / X | 字幕を 0.1 秒早める / 遅らせる |
@@ -113,7 +120,7 @@ volume = 1.0              # 0.0〜1.5
 muted = false
 repeat = "off"            # off / all / one
 shuffle = false
-queue_siblings = false    # true: ファイルを開くと同じフォルダの動画も続けて再生
+queue_siblings = false    # true: ファイルを開くと同じフォルダの動画・音声も続けて再生
 resume = true
 seek_small = 5.0
 seek_large = 60.0

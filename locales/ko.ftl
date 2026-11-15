@@ -30,7 +30,7 @@ volume-mute = 음소거 (M)
 volume-unmute = 음소거 해제 (M)
 volume-level = 볼륨 { $percent }%
 repeat-off = 반복: 끔
-repeat-one = 반복: 현재 동영상
+repeat-one = 반복: 현재 항목
 repeat-all = 반복: 전체 재생 목록
 shuffle-on = 셔플: 켬
 shuffle-off = 셔플: 끔
@@ -76,7 +76,7 @@ playlist-empty-hint = 파일을 여기에 끌어다 놓아 추가
 
 ## Empty window / drag and drop
 
-empty-drop = 동영상을 끌어다 놓아 재생
+empty-drop = 동영상이나 음악을 끌어다 놓아 재생
 empty-open-file = 파일 열기
 empty-open-folder = 폴더 열기
 empty-hint = O로 파일, Shift+O로 폴더를 열 수 있습니다
@@ -85,12 +85,12 @@ drop-play = 놓아서 재생
 
 ## File dialogs
 
-dialog-open-video = 동영상 열기
+dialog-open-media = 파일 열기
 dialog-open-folder = 폴더 열기
 dialog-add-to-playlist = 재생 목록에 추가
 dialog-save-playlist = 재생 목록 저장
 dialog-load-subtitle = 자막 파일 불러오기
-dialog-filter-media = 동영상 및 재생 목록
+dialog-filter-media = 미디어 파일 및 재생 목록
 dialog-filter-playlist = 재생 목록
 dialog-filter-subtitles = 자막
 dialog-filter-all = 모든 파일
@@ -104,13 +104,13 @@ osd-muted = 음소거
 osd-speed = 속도 { $speed }
 osd-language = 언어: { $name }
 osd-added = { $count }개 항목을 재생 목록에 추가함
-osd-no-playable = 재생할 수 있는 동영상이 없습니다
+osd-no-playable = 재생할 수 있는 파일이 없습니다
 osd-resumed = 마지막 위치에서 이어서 재생 ({ $time })
 osd-playlist-end = 재생 목록의 끝입니다
 osd-playlist-empty = 재생 목록이 비어 있습니다
 osd-playlist-saved = 재생 목록 저장됨: { $name }
 osd-playlist-save-failed = 재생 목록을 저장할 수 없습니다: { $error }
-osd-open-video-first = 먼저 동영상을 여세요
+osd-open-video-first = 먼저 파일을 여세요
 osd-subtitle-loaded = 자막: { $name } ({ $count }개)
 osd-audio-track = 오디오: { $label }
 osd-subtitle-track = 자막: { $label }
@@ -123,6 +123,7 @@ osd-single-audio-track = 오디오 트랙이 하나뿐입니다
 osd-media-info =
     비디오: { $codec } { $width }×{ $height } · 디코더: { $decoder }
     오디오: { $audio }
+osd-media-info-audio = 오디오: { $audio }
 media-info-software = 소프트웨어
 media-info-none = 없음
 
@@ -134,7 +135,7 @@ error-audio-config = 오디오 출력 설정을 가져올 수 없습니다
 error-sample-format = 지원하지 않는 샘플 형식: { $format }
 error-audio-start = 오디오 출력을 시작할 수 없습니다
 error-open-file = 열 수 없습니다: { $path }
-error-no-video-stream = 비디오 스트림을 찾을 수 없습니다
+error-no-playable-stream = 재생할 수 있는 비디오 또는 오디오 스트림을 찾을 수 없습니다
 error-video-decoder = 비디오 디코더를 열 수 없습니다
 error-audio-decoder = 오디오 디코더를 열 수 없습니다
 error-decoder-open = 디코더를 열 수 없습니다: { $error }

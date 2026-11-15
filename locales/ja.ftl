@@ -30,7 +30,7 @@ volume-mute = ミュート (M)
 volume-unmute = ミュート解除 (M)
 volume-level = 音量 { $percent }%
 repeat-off = ループ: オフ
-repeat-one = ループ: この動画
+repeat-one = ループ: この項目
 repeat-all = ループ: プレイリスト全体
 shuffle-on = シャッフル: オン
 shuffle-off = シャッフル: オフ
@@ -76,7 +76,7 @@ playlist-empty-hint = ファイルをドロップして追加
 
 ## Empty window / drag and drop
 
-empty-drop = 動画をドロップして再生
+empty-drop = 動画や音楽をドロップして再生
 empty-open-file = ファイルを開く
 empty-open-folder = フォルダを開く
 empty-hint = O でファイル、Shift+O でフォルダを開けます
@@ -85,12 +85,12 @@ drop-play = ドロップして再生
 
 ## File dialogs
 
-dialog-open-video = 動画を開く
+dialog-open-media = ファイルを開く
 dialog-open-folder = フォルダを開く
 dialog-add-to-playlist = プレイリストに追加
 dialog-save-playlist = プレイリストを保存
 dialog-load-subtitle = 字幕ファイルを読み込む
-dialog-filter-media = 動画・プレイリスト
+dialog-filter-media = 動画・音声・プレイリスト
 dialog-filter-playlist = プレイリスト
 dialog-filter-subtitles = 字幕
 dialog-filter-all = すべてのファイル
@@ -104,13 +104,13 @@ osd-muted = ミュート
 osd-speed = 速度 { $speed }
 osd-language = 言語: { $name }
 osd-added = { $count } 件をプレイリストに追加
-osd-no-playable = 再生できる動画が見つかりません
+osd-no-playable = 再生できるファイルが見つかりません
 osd-resumed = 前回の位置から再開 ({ $time })
 osd-playlist-end = プレイリストの最後です
 osd-playlist-empty = プレイリストが空です
 osd-playlist-saved = プレイリストを保存: { $name }
 osd-playlist-save-failed = プレイリストを保存できません: { $error }
-osd-open-video-first = 先に動画を開いてください
+osd-open-video-first = 先にファイルを開いてください
 osd-subtitle-loaded = 字幕: { $name } ({ $count } 件)
 osd-audio-track = 音声: { $label }
 osd-subtitle-track = 字幕: { $label }
@@ -123,6 +123,7 @@ osd-single-audio-track = 音声トラックは 1 つだけです
 osd-media-info =
     映像: { $codec } { $width }×{ $height } · デコード: { $decoder }
     音声: { $audio }
+osd-media-info-audio = 音声: { $audio }
 media-info-software = ソフトウェア
 media-info-none = なし
 
@@ -134,7 +135,7 @@ error-audio-config = 音声出力の設定を取得できません
 error-sample-format = 未対応のサンプル形式: { $format }
 error-audio-start = 音声出力を開始できません
 error-open-file = 開けませんでした: { $path }
-error-no-video-stream = 映像ストリームが見つかりません
+error-no-playable-stream = 再生できる映像・音声ストリームが見つかりません
 error-video-decoder = 映像デコーダを開けませんでした
 error-audio-decoder = 音声デコーダを開けませんでした
 error-decoder-open = デコーダを開けません: { $error }

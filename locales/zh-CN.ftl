@@ -30,7 +30,7 @@ volume-mute = 静音 (M)
 volume-unmute = 取消静音 (M)
 volume-level = 音量 { $percent }%
 repeat-off = 循环：关
-repeat-one = 循环：当前视频
+repeat-one = 循环：当前项目
 repeat-all = 循环：整个播放列表
 shuffle-on = 随机播放：开
 shuffle-off = 随机播放：关
@@ -76,7 +76,7 @@ playlist-empty-hint = 将文件拖放到此处以添加
 
 ## Empty window / drag and drop
 
-empty-drop = 拖放视频以播放
+empty-drop = 拖放视频或音频以播放
 empty-open-file = 打开文件
 empty-open-folder = 打开文件夹
 empty-hint = 按 O 打开文件，按 Shift+O 打开文件夹
@@ -85,12 +85,12 @@ drop-play = 松开以播放
 
 ## File dialogs
 
-dialog-open-video = 打开视频
+dialog-open-media = 打开文件
 dialog-open-folder = 打开文件夹
 dialog-add-to-playlist = 添加到播放列表
 dialog-save-playlist = 保存播放列表
 dialog-load-subtitle = 加载字幕文件
-dialog-filter-media = 视频和播放列表
+dialog-filter-media = 媒体文件和播放列表
 dialog-filter-playlist = 播放列表
 dialog-filter-subtitles = 字幕
 dialog-filter-all = 所有文件
@@ -104,13 +104,13 @@ osd-muted = 已静音
 osd-speed = 速度 { $speed }
 osd-language = 语言：{ $name }
 osd-added = 已添加 { $count } 项到播放列表
-osd-no-playable = 未找到可播放的视频
+osd-no-playable = 未找到可播放的文件
 osd-resumed = 已从上次位置继续播放 ({ $time })
 osd-playlist-end = 已到播放列表末尾
 osd-playlist-empty = 播放列表为空
 osd-playlist-saved = 播放列表已保存：{ $name }
 osd-playlist-save-failed = 无法保存播放列表：{ $error }
-osd-open-video-first = 请先打开视频
+osd-open-video-first = 请先打开文件
 osd-subtitle-loaded = 字幕：{ $name } ({ $count } 条)
 osd-audio-track = 音频：{ $label }
 osd-subtitle-track = 字幕：{ $label }
@@ -123,6 +123,7 @@ osd-single-audio-track = 只有一个音轨
 osd-media-info =
     视频：{ $codec } { $width }×{ $height } · 解码器：{ $decoder }
     音频：{ $audio }
+osd-media-info-audio = 音频：{ $audio }
 media-info-software = 软件
 media-info-none = 无
 
@@ -134,7 +135,7 @@ error-audio-config = 无法获取音频输出配置
 error-sample-format = 不支持的采样格式：{ $format }
 error-audio-start = 无法启动音频输出
 error-open-file = 无法打开：{ $path }
-error-no-video-stream = 未找到视频流
+error-no-playable-stream = 未找到可播放的视频或音频流
 error-video-decoder = 无法打开视频解码器
 error-audio-decoder = 无法打开音频解码器
 error-decoder-open = 无法打开解码器：{ $error }

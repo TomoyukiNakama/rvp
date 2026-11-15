@@ -30,7 +30,7 @@ volume-mute = Disattiva audio (M)
 volume-unmute = Riattiva audio (M)
 volume-level = Volume { $percent }%
 repeat-off = Ripetizione: no
-repeat-one = Ripetizione: questo video
+repeat-one = Ripetizione: questo elemento
 repeat-all = Ripetizione: intera playlist
 shuffle-on = Casuale: sì
 shuffle-off = Casuale: no
@@ -77,7 +77,7 @@ playlist-empty-hint = Trascina qui i file per aggiungerli
 
 ## Empty window / drag and drop
 
-empty-drop = Trascina un video per riprodurlo
+empty-drop = Trascina un video o un audio per riprodurlo
 empty-open-file = Apri file
 empty-open-folder = Apri cartella
 empty-hint = Premi O per aprire un file, Shift+O per aprire una cartella
@@ -86,12 +86,12 @@ drop-play = Rilascia per riprodurre
 
 ## File dialogs
 
-dialog-open-video = Apri video
+dialog-open-media = Apri file
 dialog-open-folder = Apri cartella
 dialog-add-to-playlist = Aggiungi alla playlist
 dialog-save-playlist = Salva playlist
 dialog-load-subtitle = Carica file di sottotitoli
-dialog-filter-media = Video e playlist
+dialog-filter-media = File multimediali e playlist
 dialog-filter-playlist = Playlist
 dialog-filter-subtitles = Sottotitoli
 dialog-filter-all = Tutti i file
@@ -110,13 +110,13 @@ osd-added =
         [one] Aggiunto 1 elemento alla playlist
        *[other] Aggiunti { $count } elementi alla playlist
     }
-osd-no-playable = Nessun video riproducibile trovato
+osd-no-playable = Nessun file riproducibile trovato
 osd-resumed = Ripresa dall'ultima posizione ({ $time })
 osd-playlist-end = Fine della playlist
 osd-playlist-empty = La playlist è vuota
 osd-playlist-saved = Playlist salvata: { $name }
 osd-playlist-save-failed = Impossibile salvare la playlist: { $error }
-osd-open-video-first = Apri prima un video
+osd-open-video-first = Apri prima un file
 osd-subtitle-loaded =
     { $count ->
         [one] Sottotitoli: { $name } (1 riga)
@@ -133,6 +133,7 @@ osd-single-audio-track = C'è una sola traccia audio
 osd-media-info =
     Video: { $codec } { $width }×{ $height } · Decoder: { $decoder }
     Audio: { $audio }
+osd-media-info-audio = Audio: { $audio }
 media-info-software = software
 media-info-none = nessuno
 
@@ -144,7 +145,7 @@ error-audio-config = Impossibile ottenere la configurazione dell'uscita audio
 error-sample-format = Formato dei campioni non supportato: { $format }
 error-audio-start = Impossibile avviare l'uscita audio
 error-open-file = Impossibile aprire: { $path }
-error-no-video-stream = Nessun flusso video trovato
+error-no-playable-stream = Nessun flusso video o audio riproducibile trovato
 error-video-decoder = Impossibile aprire il decoder video
 error-audio-decoder = Impossibile aprire il decoder audio
 error-decoder-open = Impossibile aprire il decoder: { $error }

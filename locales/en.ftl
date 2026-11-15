@@ -37,7 +37,7 @@ volume-mute = Mute (M)
 volume-unmute = Unmute (M)
 volume-level = Volume { $percent }%
 repeat-off = Loop: off
-repeat-one = Loop: this video
+repeat-one = Loop: this item
 repeat-all = Loop: whole playlist
 shuffle-on = Shuffle: on
 shuffle-off = Shuffle: off
@@ -84,7 +84,7 @@ playlist-empty-hint = Drop files here to add them
 
 ## Empty window / drag and drop
 
-empty-drop = Drop a video to play it
+empty-drop = Drop a video or audio file to play it
 empty-open-file = Open file
 empty-open-folder = Open folder
 empty-hint = Press O to open a file, Shift+O to open a folder
@@ -93,12 +93,12 @@ drop-play = Drop to play
 
 ## File dialogs
 
-dialog-open-video = Open video
+dialog-open-media = Open file
 dialog-open-folder = Open folder
 dialog-add-to-playlist = Add to playlist
 dialog-save-playlist = Save playlist
 dialog-load-subtitle = Load subtitle file
-dialog-filter-media = Videos and playlists
+dialog-filter-media = Media files and playlists
 dialog-filter-playlist = Playlists
 dialog-filter-subtitles = Subtitles
 dialog-filter-all = All files
@@ -117,13 +117,13 @@ osd-added =
         [one] Added 1 item to the playlist
        *[other] Added { $count } items to the playlist
     }
-osd-no-playable = No playable videos found
+osd-no-playable = No playable files found
 osd-resumed = Resumed from the last position ({ $time })
 osd-playlist-end = End of the playlist
 osd-playlist-empty = The playlist is empty
 osd-playlist-saved = Playlist saved: { $name }
 osd-playlist-save-failed = Could not save the playlist: { $error }
-osd-open-video-first = Open a video first
+osd-open-video-first = Open a file first
 osd-subtitle-loaded =
     { $count ->
         [one] Subtitles: { $name } (1 cue)
@@ -140,6 +140,7 @@ osd-single-audio-track = There is only one audio track
 osd-media-info =
     Video: { $codec } { $width }×{ $height } · Decoder: { $decoder }
     Audio: { $audio }
+osd-media-info-audio = Audio: { $audio }
 media-info-software = software
 media-info-none = none
 
@@ -151,7 +152,7 @@ error-audio-config = Cannot get the audio output configuration
 error-sample-format = Unsupported sample format: { $format }
 error-audio-start = Cannot start audio output
 error-open-file = Could not open: { $path }
-error-no-video-stream = No video stream found
+error-no-playable-stream = No playable video or audio stream found
 error-video-decoder = Could not open the video decoder
 error-audio-decoder = Could not open the audio decoder
 error-decoder-open = Cannot open the decoder: { $error }

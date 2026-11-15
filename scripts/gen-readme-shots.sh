@@ -47,6 +47,14 @@ for lang in en ja; do
      "$media/$lang/Aurora.mkv"
 done
 
+# Audio-only file with embedded cover art and tags.
+if [[ ! -f "$media/Nightfall.flac" ]]; then
+  ff -f lavfi -i anullsrc=r=48000:cl=stereo -f lavfi -i "gradients=size=800x800:rate=25:duration=0.04:n=3:c0=0x241a5e:c1=0xc0507a:c2=0xf2b36b:x0=0:y0=0:x1=800:y1=800:speed=0" \
+     -t 180 -map 0:a -map 1:v -c:a flac -c:v mjpeg -q:v 2 -disposition:v attached_pic \
+     -metadata title="Nightfall" -metadata artist="Synthetic Ensemble" -metadata album="Lavfi Sessions" \
+     "$media/Nightfall.flac"
+fi
+
 # Isolated config/state/data: no resume positions, saved language or egui UI state.
 export XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" XDG_DATA_HOME="$tmp/data"  # data: egui memory (scroll offsets)
 
@@ -75,5 +83,6 @@ for lang in en ja; do
   shot "$lang" speed RVP_DEBUG_POPUP=speed RVP_DEBUG_SPEED=1.5 -- "$dir/Aurora.mkv"
   shot "$lang" language RVP_DEBUG_POPUP=language -- "$dir/Game of Life.mkv"
   shot "$lang" about RVP_DEBUG_ABOUT=software -- "$dir/Aurora.mkv"
+  shot "$lang" audio -- "$media/Nightfall.flac"
   shot "$lang" empty --
 done

@@ -2,7 +2,7 @@
 
 **English** | [日本語](README.ja.md)
 
-A video player for Linux, built with Rust and [egui](https://github.com/emilk/egui).
+A video and music player for Linux, built with Rust and [egui](https://github.com/emilk/egui).
 
 ![rvp playing a video with subtitles](docs/images/en-player.webp)
 
@@ -28,6 +28,13 @@ Switch subtitle and audio tracks from the menu or with `S` / `A`. SRT / ASS / We
 Open a folder to play all of its videos. Repeat (one / all), shuffle, drag to reorder, and save as M3U8.
 
 ![Playlist panel](docs/images/en-playlist.webp)
+
+### Music and other audio files
+
+Audio-only files (MP3, FLAC, Ogg/Opus, M4A, WAV…) play too, showing the embedded cover art with the title, artist and
+album. Folders and playlists may mix videos and music.
+
+![Playing a FLAC file with cover art](docs/images/en-audio.webp)
 
 ### Playback speed
 
@@ -59,10 +66,10 @@ Korean and Chinese (Simplified / Traditional). See [Translations](#translations)
 ## Usage
 
 ```bash
-cargo run --release -- video.mkv [video2.mp4 ...]
+cargo run --release -- video.mkv [song.flac ...]
 ```
 
-Opening a file plays just that file; opening a folder plays every video in it. Dropping a subtitle file onto the
+Opening a file plays just that file; opening a folder plays every video and audio file in it. Dropping a subtitle file onto the
 window loads it for the current video.
 
 ![Start screen](docs/images/en-empty.webp)
@@ -92,7 +99,7 @@ all files (needed for folders and automatic subtitle detection) but writes only 
 | M | Mute |
 | `[` / `]`, Backspace | Slower / faster, reset to 1× |
 | N / B | Next / previous item |
-| L | Loop (off → this video → whole playlist) |
+| L | Loop (off → this item → whole playlist) |
 | P | Playlist |
 | V / S / A | Show/hide subtitles / next subtitle track / next audio track |
 | Z / X | Subtitles 0.1 s earlier / later |
@@ -113,7 +120,7 @@ volume = 1.0              # 0.0–1.5
 muted = false
 repeat = "off"            # off / all / one
 shuffle = false
-queue_siblings = false    # true: opening a file also queues the other videos in its folder
+queue_siblings = false    # true: opening a file also queues the other media files in its folder
 resume = true
 seek_small = 5.0
 seek_large = 60.0

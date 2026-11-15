@@ -30,7 +30,7 @@ volume-mute = Silenciar (M)
 volume-unmute = Activar sonido (M)
 volume-level = Volumen { $percent }%
 repeat-off = Repetir: desactivado
-repeat-one = Repetir: este vídeo
+repeat-one = Repetir: este elemento
 repeat-all = Repetir: toda la lista
 shuffle-on = Aleatorio: activado
 shuffle-off = Aleatorio: desactivado
@@ -77,7 +77,7 @@ playlist-empty-hint = Suelta archivos aquí para añadirlos
 
 ## Empty window / drag and drop
 
-empty-drop = Suelta un vídeo para reproducirlo
+empty-drop = Suelta un vídeo o un audio para reproducirlo
 empty-open-file = Abrir archivo
 empty-open-folder = Abrir carpeta
 empty-hint = Pulsa O para abrir un archivo, Shift+O para una carpeta
@@ -86,12 +86,12 @@ drop-play = Suelta para reproducir
 
 ## File dialogs
 
-dialog-open-video = Abrir vídeo
+dialog-open-media = Abrir archivo
 dialog-open-folder = Abrir carpeta
 dialog-add-to-playlist = Añadir a la lista de reproducción
 dialog-save-playlist = Guardar lista de reproducción
 dialog-load-subtitle = Cargar archivo de subtítulos
-dialog-filter-media = Vídeos y listas de reproducción
+dialog-filter-media = Archivos multimedia y listas de reproducción
 dialog-filter-playlist = Listas de reproducción
 dialog-filter-subtitles = Subtítulos
 dialog-filter-all = Todos los archivos
@@ -110,13 +110,13 @@ osd-added =
         [one] 1 elemento añadido a la lista de reproducción
        *[other] { $count } elementos añadidos a la lista de reproducción
     }
-osd-no-playable = No se encontraron vídeos reproducibles
+osd-no-playable = No se encontraron archivos reproducibles
 osd-resumed = Reanudado desde la última posición ({ $time })
 osd-playlist-end = Fin de la lista de reproducción
 osd-playlist-empty = La lista de reproducción está vacía
 osd-playlist-saved = Lista guardada: { $name }
 osd-playlist-save-failed = No se pudo guardar la lista: { $error }
-osd-open-video-first = Abre primero un vídeo
+osd-open-video-first = Abre primero un archivo
 osd-subtitle-loaded =
     { $count ->
         [one] Subtítulos: { $name } (1 línea)
@@ -133,6 +133,7 @@ osd-single-audio-track = Solo hay una pista de audio
 osd-media-info =
     Vídeo: { $codec } { $width }×{ $height } · Decodificador: { $decoder }
     Audio: { $audio }
+osd-media-info-audio = Audio: { $audio }
 media-info-software = software
 media-info-none = ninguno
 
@@ -144,7 +145,7 @@ error-audio-config = No se puede obtener la configuración de la salida de audio
 error-sample-format = Formato de muestra no compatible: { $format }
 error-audio-start = No se puede iniciar la salida de audio
 error-open-file = No se pudo abrir: { $path }
-error-no-video-stream = No se encontró ninguna secuencia de vídeo
+error-no-playable-stream = No se encontró ninguna secuencia de vídeo o audio reproducible
 error-video-decoder = No se pudo abrir el decodificador de vídeo
 error-audio-decoder = No se pudo abrir el decodificador de audio
 error-decoder-open = No se puede abrir el decodificador: { $error }

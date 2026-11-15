@@ -16,11 +16,12 @@ pub(super) struct SubDecoder {
 
 pub(super) struct DemuxCtx {
     pub input: ffmpeg::format::context::Input,
-    pub video_index: usize,
+    /// `None` for audio-only files.
+    pub video_index: Option<usize>,
     /// Container start time in seconds (added back when seeking).
     pub start_time: f64,
     pub cmd_rx: Receiver<DemuxCmd>,
-    pub video_tx: Sender<PacketMsg>,
+    pub video_tx: Option<Sender<PacketMsg>>,
     /// Audio stream index and its packet queue, if audio is being played.
     pub audio: Option<(usize, Sender<PacketMsg>)>,
     pub subtitle: Option<SubDecoder>,
@@ -96,8 +97,8 @@ pub(super) fn run(mut d: DemuxCtx) {
             decode_subtitle(&mut d, &packet);
             continue;
         }
-        let tx = if idx == d.video_index {
-            d.video_tx.clone()
+        let tx = if let Some(tx) = d.video_tx.as_ref().filter(|_| d.video_index == Some(idx)) {
+            tx.clone()
         } else if let Some((_, tx)) = d.audio.as_ref().filter(|(a, _)| *a == idx) {
             tx.clone()
         } else {
@@ -244,7 +245,7 @@ fn handle_cmd(d: &mut DemuxCtx, cmd: DemuxCmd, serial: &mut u64) -> Flow {
 
 /// Sends a control message to every active stream queue. `false` = player gone.
 fn broadcast(d: &DemuxCtx, msg: impl Fn() -> PacketMsg) -> bool {
-    let mut ok = d.video_tx.send(msg()).is_ok();
+    let mut ok = d.video_tx.as_ref().is_none_or(|tx| tx.send(msg()).is_ok());
     if let Some((_, tx)) = &d.audio {
         ok &= tx.send(msg()).is_ok();
     }

@@ -30,7 +30,7 @@ volume-mute = Muet (M)
 volume-unmute = Réactiver le son (M)
 volume-level = Volume { $percent }%
 repeat-off = Boucle : désactivée
-repeat-one = Boucle : cette vidéo
+repeat-one = Boucle : cet élément
 repeat-all = Boucle : toute la liste
 shuffle-on = Aléatoire : activé
 shuffle-off = Aléatoire : désactivé
@@ -77,7 +77,7 @@ playlist-empty-hint = Déposez des fichiers ici pour les ajouter
 
 ## Empty window / drag and drop
 
-empty-drop = Déposez une vidéo pour la lire
+empty-drop = Déposez une vidéo ou un fichier audio pour le lire
 empty-open-file = Ouvrir un fichier
 empty-open-folder = Ouvrir un dossier
 empty-hint = O pour ouvrir un fichier, Shift+O pour un dossier
@@ -86,12 +86,12 @@ drop-play = Déposer pour lire
 
 ## File dialogs
 
-dialog-open-video = Ouvrir une vidéo
+dialog-open-media = Ouvrir un fichier
 dialog-open-folder = Ouvrir un dossier
 dialog-add-to-playlist = Ajouter à la liste de lecture
 dialog-save-playlist = Enregistrer la liste de lecture
 dialog-load-subtitle = Charger un fichier de sous-titres
-dialog-filter-media = Vidéos et listes de lecture
+dialog-filter-media = Fichiers multimédias et listes de lecture
 dialog-filter-playlist = Listes de lecture
 dialog-filter-subtitles = Sous-titres
 dialog-filter-all = Tous les fichiers
@@ -110,13 +110,13 @@ osd-added =
         [one] { $count } élément ajouté à la liste de lecture
        *[other] { $count } éléments ajoutés à la liste de lecture
     }
-osd-no-playable = Aucune vidéo lisible trouvée
+osd-no-playable = Aucun fichier lisible trouvé
 osd-resumed = Reprise à la dernière position ({ $time })
 osd-playlist-end = Fin de la liste de lecture
 osd-playlist-empty = La liste de lecture est vide
 osd-playlist-saved = Liste enregistrée : { $name }
 osd-playlist-save-failed = Impossible d'enregistrer la liste : { $error }
-osd-open-video-first = Ouvrez d'abord une vidéo
+osd-open-video-first = Ouvrez d'abord un fichier
 osd-subtitle-loaded =
     { $count ->
         [one] Sous-titres : { $name } ({ $count } réplique)
@@ -133,6 +133,7 @@ osd-single-audio-track = Il n'y a qu'une seule piste audio
 osd-media-info =
     Vidéo : { $codec } { $width }×{ $height } · Décodeur : { $decoder }
     Audio : { $audio }
+osd-media-info-audio = Audio : { $audio }
 media-info-software = logiciel
 media-info-none = aucun
 
@@ -144,7 +145,7 @@ error-audio-config = Impossible d'obtenir la configuration de la sortie audio
 error-sample-format = Format d'échantillon non pris en charge : { $format }
 error-audio-start = Impossible de démarrer la sortie audio
 error-open-file = Ouverture impossible : { $path }
-error-no-video-stream = Aucun flux vidéo trouvé
+error-no-playable-stream = Aucun flux vidéo ou audio lisible trouvé
 error-video-decoder = Impossible d'ouvrir le décodeur vidéo
 error-audio-decoder = Impossible d'ouvrir le décodeur audio
 error-decoder-open = Impossible d'ouvrir le décodeur : { $error }

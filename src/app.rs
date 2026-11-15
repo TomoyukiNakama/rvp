@@ -12,7 +12,7 @@ use egui_phosphor::regular as icon;
 
 use crate::config::{Config, ResumeStore};
 use crate::player::{AudioDevice, GPU_16BIT, HwDec, PlayState, Player, SUBTITLE_EXTENSIONS, VideoFrame, is_subtitle_file};
-use crate::playlist::{PLAYLIST_EXTENSIONS, Playlist, VIDEO_EXTENSIONS};
+use crate::playlist::{AUDIO_EXTENSIONS, PLAYLIST_EXTENSIONS, Playlist, VIDEO_EXTENSIONS};
 use crate::render::{VideoPaint, VideoRenderer};
 use crate::theme::{self, color, motion, size};
 use crate::ui::controls::{self, ControlsModel};
@@ -214,6 +214,7 @@ impl RvpApp {
 
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         self.remember_position();
+        let was_audio_only = self.player.as_ref().is_some_and(|p| !p.info().has_video);
         // Drop the old player first so its threads stop before new ones start.
         // The last frame stays on screen until the new file's first frame
         // replaces it (no black flash between consecutive files).
@@ -226,6 +227,12 @@ impl RvpApp {
                 p.set_speed(self.speed);
                 if let Some(e) = p.take_error() {
                     self.show_osd(ctx, e, true);
+                }
+                if !p.info().has_video {
+                    // Audio-only: the cover art (if any) replaces the last video frame.
+                    self.current = p.take_cover().map(Arc::new);
+                } else if was_audio_only {
+                    self.current = None; // don't show the cover art as a video frame
                 }
                 let info = p.info();
                 // With a previous frame still shown, keep its aspect until the
@@ -436,9 +443,10 @@ impl RvpApp {
                     .save_file()
                     .map(|p| vec![p]),
                 DialogKind::Open | DialogKind::Append => {
-                    let media: Vec<&str> = VIDEO_EXTENSIONS.iter().chain(PLAYLIST_EXTENSIONS).copied().collect();
+                    let media: Vec<&str> =
+                        VIDEO_EXTENSIONS.iter().chain(AUDIO_EXTENSIONS).chain(PLAYLIST_EXTENSIONS).copied().collect();
                     dialog
-                        .set_title(t!(if matches!(kind, DialogKind::Append) { "dialog-add-to-playlist" } else { "dialog-open-video" }))
+                        .set_title(t!(if matches!(kind, DialogKind::Append) { "dialog-add-to-playlist" } else { "dialog-open-media" }))
                         .add_filter(t!("dialog-filter-media"), &media)
                         .add_filter(t!("dialog-filter-all"), &["*"])
                         .pick_files()
@@ -548,6 +556,14 @@ impl RvpApp {
             None => t!("media-info-software"),
         };
         let audio = i.audio_codec.clone().unwrap_or_else(|| t!("media-info-none"));
+        if !i.has_video {
+            let detail = p
+                .audio_stream()
+                .and_then(|s| i.audio_tracks.iter().find(|t| t.stream == s))
+                .map_or(audio, |t| t.detail.trim_matches(['(', ')']).to_owned());
+            self.show_osd(ctx, t!("osd-media-info-audio", audio = detail), false);
+            return;
+        }
         let text = t!(
             "osd-media-info",
             codec = i.codec.as_str(),
@@ -910,6 +926,58 @@ impl RvpApp {
         );
     }
 
+    /// Audio-only file: cover art (or a placeholder) with title, artist and album.
+    fn paint_audio_view(&self, ui: &egui::Ui, window: Rect) {
+        let Some(info) = self.player.as_ref().map(Player::info) else { return };
+        let area = Rect::from_min_max(
+            pos2(window.left(), window.top() + size::TITLEBAR_HEIGHT),
+            pos2(window.right(), controls::bar_rect(window).top()),
+        );
+        const TEXT_BLOCK: f32 = 64.0;
+        let art = (area.height() - TEXT_BLOCK - 24.0).min(area.width() - 48.0).min(360.0);
+        if art < 48.0 {
+            return;
+        }
+        let top = area.center().y - (art + TEXT_BLOCK) / 2.0;
+        let art_rect = Rect::from_center_size(pos2(area.center().x, top + art / 2.0), vec2(art, art));
+
+        let p = ui.painter();
+        match &self.current {
+            Some(frame) => {
+                // Fit non-square covers inside the square, keeping their aspect.
+                let rect = window::fit_rect(art_rect, frame.display_aspect());
+                p.add(egui_wgpu::Callback::new_paint_callback(
+                    rect,
+                    VideoPaint {
+                        frame: frame.clone(),
+                        rect,
+                        radius: size::PANEL_RADIUS as f32,
+                    },
+                ));
+            }
+            None => {
+                p.rect_filled(art_rect, CornerRadius::same(size::PANEL_RADIUS), color::ACCENT.gamma_multiply(0.10));
+                p.text(art_rect.center(), Align2::CENTER_CENTER, icon::MUSIC_NOTES, icon_font(art * 0.4), color::ACCENT);
+            }
+        }
+
+        let width = (area.width() - 48.0).max(1.0);
+        let mut y = art_rect.bottom() + 18.0;
+        let line = |text: String, font: FontId, color: Color32, y: f32| {
+            let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+            let galley = p.layout_job(job);
+            let h = galley.size().y;
+            p.galley(pos2(area.center().x - galley.size().x / 2.0, y), galley, color);
+            h
+        };
+        y += line(info.title.clone(), FontId::proportional(18.0), color::TEXT, y) + 4.0;
+        let sub: Vec<&str> = [info.artist.as_deref(), info.album.as_deref()].into_iter().flatten().collect();
+        if !sub.is_empty() {
+            line(sub.join(" — "), FontId::proportional(13.5), color::TEXT_DIM, y);
+        }
+    }
+
     fn paint_osd(&mut self, ui: &egui::Ui, window: Rect) {
         let now = ui.input(|i| i.time);
         let Some(osd) = &self.osd else { return };
@@ -1002,7 +1070,8 @@ impl eframe::App for RvpApp {
         let radius = if fullscreen || maximized { 0 } else { size::WINDOW_RADIUS };
         let window_radius = CornerRadius::same(radius);
 
-        if !fullscreen && !maximized && self.player.is_some() {
+        let audio_only = self.player.as_ref().is_some_and(|p| !p.info().has_video);
+        if !fullscreen && !maximized && self.player.is_some() && !audio_only {
             self.fit_window_to_video(&ctx, window.size(), now);
         }
 
@@ -1022,8 +1091,10 @@ impl eframe::App for RvpApp {
             self.handle_wheel(&ctx);
         }
 
-        // Video.
-        if let Some(frame) = &self.current {
+        // Video (or, for audio-only files, the cover art card).
+        if audio_only {
+            self.paint_audio_view(ui, window);
+        } else if let Some(frame) = &self.current {
             let video = window::fit_rect(window, self.video_aspect);
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 video,
@@ -1043,7 +1114,8 @@ impl eframe::App for RvpApp {
         // rests on the controls, a menu is open, or nothing is loaded.
         let over_chrome =
             hover_pos.is_some_and(|p| bar.expand(8.0).contains(p) || (self.show_playlist && panel.contains(p)));
-        let keep = self.player.is_none() || over_chrome || egui::Popup::is_any_open(&ctx) || self.about.is_some();
+        // Audio-only files have nothing to uncover, so the controls stay.
+        let keep = self.player.is_none() || audio_only || over_chrome || egui::Popup::is_any_open(&ctx) || self.about.is_some();
         let idle = now - self.last_activity;
         let visible = keep || idle < motion::HIDE_AFTER;
         if visible && !keep {

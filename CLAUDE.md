@@ -45,6 +45,10 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   renderD129 = AMD iGPU with radeonsi). `get_format` falls back to software when the hw format isn't offered.
   Frames are downloaded (`av_hwframe_transfer_data`) to NV12/P010 → semi-planar path. Repeated hw errors make the
   decode thread swap in a SW decoder and emit `PlayerEvent::HwFallback` (player re-seeks). Vulkan hwaccel hangs here.
+- Audio-only files: `best_video` ignores cover art (`ATTACHED_PIC`); with no video, the demuxer gets no video queue,
+  no vdec thread runs, audio isn't held, and the first audible sample anchors the clock. Cover art is decoded once at
+  open (`decode_cover`) and taken by the UI via `take_cover`; `app.rs::paint_audio_view` draws it with the tags.
+  Extensions: `playlist::AUDIO_EXTENSIONS` (`is_media` / `media_in` for folders).
 - Speed: `Player::set_speed` scales the system clock and sets `AudioQueue::speed`; the audio decoder runs
   `player/tempo.rs` (libavfilter `atempo`, chained for < 0.5×) only while speed ≠ 1. Each `AudioChunk` carries its
   speed, so one device sample = `speed / rate` media seconds. `atempo` output pts are in the *output* domain —

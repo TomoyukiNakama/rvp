@@ -30,7 +30,7 @@ volume-mute = Bisukan (M)
 volume-unmute = Bunyikan (M)
 volume-level = Volume { $percent }%
 repeat-off = Ulangi: mati
-repeat-one = Ulangi: video ini
+repeat-one = Ulangi: item ini
 repeat-all = Ulangi: seluruh daftar
 shuffle-on = Acak: hidup
 shuffle-off = Acak: mati
@@ -77,7 +77,7 @@ playlist-empty-hint = Jatuhkan berkas di sini untuk menambahkan
 
 ## Empty window / drag and drop
 
-empty-drop = Jatuhkan video untuk memutarnya
+empty-drop = Jatuhkan video atau audio untuk memutarnya
 empty-open-file = Buka berkas
 empty-open-folder = Buka folder
 empty-hint = Tekan O untuk membuka berkas, Shift+O untuk membuka folder
@@ -86,12 +86,12 @@ drop-play = Jatuhkan untuk memutar
 
 ## File dialogs
 
-dialog-open-video = Buka video
+dialog-open-media = Buka berkas
 dialog-open-folder = Buka folder
 dialog-add-to-playlist = Tambah ke daftar putar
 dialog-save-playlist = Simpan daftar putar
 dialog-load-subtitle = Muat berkas subjudul
-dialog-filter-media = Video dan daftar putar
+dialog-filter-media = Berkas media dan daftar putar
 dialog-filter-playlist = Daftar putar
 dialog-filter-subtitles = Subjudul
 dialog-filter-all = Semua berkas
@@ -106,13 +106,13 @@ osd-muted = Dibisukan
 osd-speed = Kecepatan { $speed }
 osd-language = Bahasa: { $name }
 osd-added = { $count } item ditambahkan ke daftar putar
-osd-no-playable = Tidak ada video yang dapat diputar
+osd-no-playable = Tidak ada berkas yang dapat diputar
 osd-resumed = Dilanjutkan dari posisi terakhir ({ $time })
 osd-playlist-end = Akhir daftar putar
 osd-playlist-empty = Daftar putar kosong
 osd-playlist-saved = Daftar putar disimpan: { $name }
 osd-playlist-save-failed = Gagal menyimpan daftar putar: { $error }
-osd-open-video-first = Buka video terlebih dahulu
+osd-open-video-first = Buka berkas terlebih dahulu
 osd-subtitle-loaded = Subjudul: { $name } ({ $count } baris)
 osd-audio-track = Audio: { $label }
 osd-subtitle-track = Subjudul: { $label }
@@ -125,6 +125,7 @@ osd-single-audio-track = Hanya ada satu trek audio
 osd-media-info =
     Video: { $codec } { $width }×{ $height } · Dekoder: { $decoder }
     Audio: { $audio }
+osd-media-info-audio = Audio: { $audio }
 media-info-software = perangkat lunak
 media-info-none = tidak ada
 
@@ -136,7 +137,7 @@ error-audio-config = Tidak dapat mengambil konfigurasi keluaran audio
 error-sample-format = Format sampel tidak didukung: { $format }
 error-audio-start = Tidak dapat memulai keluaran audio
 error-open-file = Gagal membuka: { $path }
-error-no-video-stream = Aliran video tidak ditemukan
+error-no-playable-stream = Aliran video atau audio yang dapat diputar tidak ditemukan
 error-video-decoder = Gagal membuka dekoder video
 error-audio-decoder = Gagal membuka dekoder audio
 error-decoder-open = Tidak dapat membuka dekoder: { $error }

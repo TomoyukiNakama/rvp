@@ -10,10 +10,16 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg", "ogv", "3gp", "vob",
 ];
 
-pub fn is_video(path: &Path) -> bool {
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "aiff", "aif", "ape", "wv", "mka", "ac3", "dts",
+    "mpc", "tta", "alac",
+];
+
+/// Video or audio file (by extension).
+pub fn is_media(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| VIDEO_EXTENSIONS.iter().any(|v| v.eq_ignore_ascii_case(e)))
+        .is_some_and(|e| VIDEO_EXTENSIONS.iter().chain(AUDIO_EXTENSIONS).any(|v| v.eq_ignore_ascii_case(e)))
 }
 
 pub const PLAYLIST_EXTENSIONS: &[&str] = &["m3u8", "m3u"];
@@ -104,10 +110,10 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Videos directly inside `dir`, naturally sorted.
-pub fn videos_in(dir: &Path) -> Vec<PathBuf> {
+/// Video and audio files directly inside `dir`, naturally sorted.
+pub fn media_in(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && is_video(p)).collect())
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && is_media(p)).collect())
         .unwrap_or_default();
     v.sort_by(|a, b| natural_cmp(&file_name(a), &file_name(b)));
     v
@@ -119,13 +125,13 @@ pub fn expand(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in paths {
         if p.is_dir() {
-            out.extend(videos_in(&p));
+            out.extend(media_in(&p));
         } else if is_playlist_file(&p) {
             match load_m3u(&p) {
                 Ok(Some(entries)) => {
                     for e in entries {
                         if e.is_dir() {
-                            out.extend(videos_in(&e));
+                            out.extend(media_in(&e));
                         } else if !is_playlist_file(&e) {
                             out.push(e);
                         }
@@ -225,7 +231,7 @@ impl Playlist {
         let paths = expand(paths);
         let (items, current) = match paths.as_slice() {
             [single] if with_siblings => {
-                let siblings = single.parent().map(videos_in).unwrap_or_default();
+                let siblings = single.parent().map(media_in).unwrap_or_default();
                 let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                 let me = canon(single);
                 match siblings.iter().position(|s| canon(s) == me) {
@@ -413,6 +419,16 @@ mod tests {
 
     fn cur(p: &Playlist) -> &str {
         p.current().unwrap().to_str().unwrap()
+    }
+
+    #[test]
+    fn media_extensions() {
+        assert!(is_media(Path::new("a/b.MKV")));
+        assert!(is_media(Path::new("song.flac")));
+        assert!(is_media(Path::new("song.Mp3")));
+        assert!(!is_media(Path::new("cover.jpg")));
+        assert!(!is_media(Path::new("subs.srt")));
+        assert!(!is_media(Path::new("noext")));
     }
 
     #[test]
