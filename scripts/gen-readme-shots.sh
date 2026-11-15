@@ -54,6 +54,9 @@ if [[ ! -f "$media/Nightfall.flac" ]]; then
      -metadata title="Nightfall" -metadata artist="Synthetic Ensemble" -metadata album="Lavfi Sessions" \
      "$media/Nightfall.flac"
 fi
+# Synced lyrics next to it (picked up like a subtitle file); the shot lands on the second line.
+printf '[ti:Nightfall]\n[00:00.00]The city lights begin to glow\n[00:01.20]Every street a quiet song\n[00:05.00]Footsteps fading into night\n' \
+  > "$media/Nightfall.lrc"
 
 # Isolated config/state/data: no resume positions, saved language or egui UI state.
 export XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" XDG_DATA_HOME="$tmp/data"  # data: egui memory (scroll offsets)

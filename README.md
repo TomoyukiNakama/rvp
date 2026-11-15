@@ -18,7 +18,7 @@ A video and music player for Linux, built with Rust and [egui](https://github.co
 
 ### Subtitles and tracks
 
-Switch subtitle and audio tracks from the menu or with `S` / `A`. SRT / ASS / WebVTT, both embedded and external files
+Switch subtitle and audio tracks from the menu or with `S` / `A`. SRT / ASS / WebVTT (and LRC lyrics), both embedded and external files
 (Shift_JIS is detected too). Subtitle timing can be shifted in 0.1 s steps.
 
 ![Subtitle and audio track menu](docs/images/en-tracks.webp)
@@ -32,7 +32,8 @@ Open a folder to play all of its videos. Repeat (one / all), shuffle, drag to re
 ### Music and other audio files
 
 Audio-only files (MP3, FLAC, Ogg/Opus, M4A, WAV…) play too, showing the embedded cover art with the title, artist and
-album. Folders and playlists may mix videos and music.
+album. Synced lyrics (`.lrc` next to the song, or dropped onto the window) scroll line by line below. Folders and
+playlists may mix videos and music.
 
 ![Playing a FLAC file with cover art](docs/images/en-audio.webp)
 

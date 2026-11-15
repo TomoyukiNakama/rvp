@@ -1,5 +1,5 @@
-//! Text subtitles: cue storage, file parsers (SRT / ASS / WebVTT), ASS tag
-//! stripping, and charset detection for external files.
+//! Text subtitles: cue storage, file parsers (SRT / ASS / WebVTT / LRC lyrics),
+//! ASS tag stripping, and charset detection for external files.
 
 use std::path::{Path, PathBuf};
 
@@ -46,12 +46,32 @@ impl SubtitleTrack {
         self.cues.len()
     }
 
+    /// Lyrics view around `t`: the line showing now (if any), with its neighbours.
+    /// Without a current line, `prev`/`next` are the lines before/after `t`.
+    pub fn around(&self, t: f64) -> Around<'_> {
+        let hi = self.cues.partition_point(|c| c.start <= t);
+        let current = hi.checked_sub(1).filter(|&i| t < self.cues[i].end);
+        let before = current.unwrap_or(hi);
+        Around {
+            prev: before.checked_sub(1).map(|i| self.cues[i].text.as_str()),
+            current: current.map(|i| self.cues[i].text.as_str()),
+            next: self.cues.get(hi).map(|c| c.text.as_str()),
+        }
+    }
+
     /// Texts of all cues showing at `t`, in start order.
     pub fn active(&self, t: f64) -> Vec<&str> {
         let hi = self.cues.partition_point(|c| c.start <= t);
         let lo = self.cues[..hi].partition_point(|c| c.start < t - self.max_len);
         self.cues[lo..hi].iter().filter(|c| t < c.end).map(|c| c.text.as_str()).collect()
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Around<'a> {
+    pub prev: Option<&'a str>,
+    pub current: Option<&'a str>,
+    pub next: Option<&'a str>,
 }
 
 // ---- Text cleanup --------------------------------------------------------------
@@ -190,7 +210,45 @@ pub fn parse_ass(text: &str) -> Vec<Cue> {
     cues
 }
 
-pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt"];
+/// How long the last lyrics line stays (LRC has no end times).
+const LRC_LAST_LINE: f64 = 10.0;
+
+/// LRC lyrics: `[mm:ss.xx]line` (several time tags per line allowed), `[offset:±ms]`,
+/// enhanced-LRC word tags (`<mm:ss.xx>`) stripped. A line ends where the next one
+/// starts; an empty line (instrumental break) just ends the previous one.
+pub fn parse_lrc(text: &str) -> Vec<Cue> {
+    let mut offset = 0.0;
+    let mut lines: Vec<(f64, String)> = Vec::new();
+    for raw in text.lines() {
+        let mut rest = raw.trim();
+        let mut times = Vec::new();
+        while let Some(tag) = rest.strip_prefix('[').and_then(|r| r.split_once(']')) {
+            let (inner, after) = tag;
+            if let Some(t) = parse_timestamp(inner).filter(|_| inner.contains(':') && !inner.contains(char::is_alphabetic)) {
+                times.push(t);
+            } else if let Some(ms) = inner.strip_prefix("offset:") {
+                // Positive offset = lyrics come earlier.
+                offset = ms.trim().parse::<f64>().unwrap_or(0.0) / 1000.0;
+            }
+            rest = after.trim_start();
+        }
+        if times.is_empty() {
+            continue;
+        }
+        let text = strip_markup(rest);
+        lines.extend(times.into_iter().map(|t| (t, text.clone())));
+    }
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut cues = Vec::new();
+    for (i, (start, text)) in lines.iter().enumerate() {
+        let end = lines[i + 1..].iter().map(|l| l.0).find(|&t| t > *start).unwrap_or(start + LRC_LAST_LINE);
+        let shift = |t: f64| (t - offset).max(0.0);
+        cues.push(Cue { start: shift(*start), end: shift(end), text: text.clone() });
+    }
+    cues
+}
+
+pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt", "lrc"];
 
 pub fn is_subtitle_file(path: &Path) -> bool {
     path.extension()
@@ -203,6 +261,7 @@ pub fn load_file(path: &Path) -> std::io::Result<SubtitleTrack> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let cues = match ext.as_str() {
         "ass" | "ssa" => parse_ass(&text),
+        "lrc" => parse_lrc(&text),
         _ => parse_srt(text.strip_prefix("WEBVTT").unwrap_or(&text)),
     };
     Ok(SubtitleTrack::from_cues(cues))
@@ -259,6 +318,27 @@ mod tests {
     }
 
     #[test]
+    fn lrc_lyrics() {
+        let lrc = "[ti:Song]\n[ar:Someone]\n[offset:+500]\n[00:01.00]First\n[00:03.50][00:10.00]Chorus <00:04.00>la\n\
+                   [00:06.00]\n[00:08.00]After break\n";
+        let cues = SubtitleTrack::from_cues(parse_lrc(lrc));
+        assert_eq!(cues.len(), 4);
+        // 0.5 s offset: everything 0.5 s earlier.
+        assert_eq!(cues.active(0.6), vec!["First"]);
+        assert_eq!(cues.active(3.2), vec!["Chorus la"]);
+        assert!(cues.active(6.0).is_empty(), "empty line = instrumental break");
+        assert_eq!(cues.active(9.0), vec!["After break"]);
+        assert_eq!(cues.active(12.0), vec!["Chorus la"]);
+        assert_eq!(cues.active(19.0), vec!["Chorus la"], "last line lasts {LRC_LAST_LINE} s");
+
+        let a = cues.around(3.2);
+        assert_eq!(a, Around { prev: Some("First"), current: Some("Chorus la"), next: Some("After break") });
+        let gap = cues.around(6.0);
+        assert_eq!(gap, Around { prev: Some("Chorus la"), current: None, next: Some("After break") });
+        assert_eq!(cues.around(0.0), Around { prev: None, current: None, next: Some("First") });
+    }
+
+    #[test]
     fn shift_jis_and_bom_detection() {
         let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("字幕テスト");
         assert_eq!(decode_text(&sjis), "字幕テスト");
@@ -283,7 +363,7 @@ mod tests {
     fn external_files_are_found_by_stem() {
         let dir = std::env::temp_dir().join(format!("rvp-sub-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for n in ["movie.mkv", "movie.ja.srt", "movie.srt", "movie2.srt", "other.ass"] {
+        for n in ["movie.mkv", "movie.ja.srt", "movie.srt", "movie2.srt", "other.ass", "song.flac", "song.lrc"] {
             std::fs::write(dir.join(n), b"").unwrap();
         }
         let found: Vec<String> = find_external(&dir.join("movie.mkv"))
@@ -291,6 +371,7 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(found, ["movie.srt", "movie.ja.srt"]);
+        assert_eq!(find_external(&dir.join("song.flac")), [dir.join("song.lrc")]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

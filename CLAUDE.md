@@ -35,7 +35,7 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   `Player::update` disciplines the system `Clock` to `audible_time()` (audio = master); without fresh audio the clock free-runs.
   `hold` keeps audio silent until the first video frame after open/seek is shown.
   Resampling uses swresample via raw FFI (`Resampler`), not ffmpeg-next's wrapper (its output buffer is too small when up-sampling).
-- Subtitles/tracks: `player/subtitle.rs` (cue store with dedupe, SRT/VTT/ASS parsers, ASS tag stripping, UTF-8/BOM/
+- Subtitles/tracks: `player/subtitle.rs` (cue store with dedupe, SRT/VTT/ASS/LRC parsers, ASS tag stripping, UTF-8/BOM/
   Shift_JIS detection, `find_external`). Embedded *text* subs are decoded inline in the demux thread (`decode_subtitle`;
   call `avsubtitle_free` — ffmpeg-next doesn't) and sent as `PlayerEvent::SubtitleCue`. Track switches go through
   `DemuxCmd::SelectAudio/SelectSubtitle` followed by an exact re-seek (`Player::reseek`); audio switch ships a new
@@ -48,6 +48,8 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
 - Audio-only files: `best_video` ignores cover art (`ATTACHED_PIC`); with no video, the demuxer gets no video queue,
   no vdec thread runs, audio isn't held, and the first audible sample anchors the clock. Cover art is decoded once at
   open (`decode_cover`) and taken by the UI via `take_cover`; `app.rs::paint_audio_view` draws it with the tags.
+  Lyrics = `.lrc` handled as an external subtitle file (`subtitle::parse_lrc`); for audio-only files the shown track
+  is drawn as prev/current/next lines (`Player::lyrics` → `SubtitleTrack::around`) instead of the bottom overlay.
   Extensions: `playlist::AUDIO_EXTENSIONS` (`is_media` / `media_in` for folders).
 - Speed: `Player::set_speed` scales the system clock and sets `AudioQueue::speed`; the audio decoder runs
   `player/tempo.rs` (libavfilter `atempo`, chained for < 0.5×) only while speed ≠ 1. Each `AudioChunk` carries its

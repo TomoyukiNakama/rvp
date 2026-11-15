@@ -933,12 +933,14 @@ impl RvpApp {
             pos2(window.left(), window.top() + size::TITLEBAR_HEIGHT),
             pos2(window.right(), controls::bar_rect(window).top()),
         );
-        const TEXT_BLOCK: f32 = 64.0;
-        let art = (area.height() - TEXT_BLOCK - 24.0).min(area.width() - 48.0).min(360.0);
+        let lyrics = self.player.as_ref().and_then(Player::lyrics);
+        // Title + artist, plus three lyrics lines when a lyrics/subtitle track is shown.
+        let text_block = if lyrics.is_some() { 64.0 + 100.0 } else { 64.0 };
+        let art = (area.height() - text_block - 24.0).min(area.width() - 48.0).min(360.0);
         if art < 48.0 {
             return;
         }
-        let top = area.center().y - (art + TEXT_BLOCK) / 2.0;
+        let top = area.center().y - (art + text_block) / 2.0;
         let art_rect = Rect::from_center_size(pos2(area.center().x, top + art / 2.0), vec2(art, art));
 
         let p = ui.painter();
@@ -975,6 +977,16 @@ impl RvpApp {
         let sub: Vec<&str> = [info.artist.as_deref(), info.album.as_deref()].into_iter().flatten().collect();
         if !sub.is_empty() {
             line(sub.join(" — "), FontId::proportional(13.5), color::TEXT_DIM, y);
+        }
+
+        // Lyrics: previous / current / next line (multi-line cues joined).
+        if let Some(l) = lyrics {
+            let one = |t: Option<&str>| t.map(|t| t.lines().map(str::trim).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            let mut y = top + art + 64.0 + 16.0;
+            let dim = color::TEXT_DIM.gamma_multiply(0.7);
+            y += line(one(l.prev), FontId::proportional(14.0), dim, y) .max(18.0) + 8.0;
+            y += line(one(l.current), FontId::proportional(19.0), color::ACCENT, y).max(24.0) + 8.0;
+            line(one(l.next), FontId::proportional(14.0), dim, y);
         }
     }
 
@@ -1146,7 +1158,8 @@ impl eframe::App for RvpApp {
         }
 
         // Subtitles sit above the video, below the chrome; they move up while the bar is shown.
-        if let Some(text) = self.player.as_ref().and_then(Player::subtitle_text) {
+        // (Audio-only files show them as lyrics in the audio view instead.)
+        if let Some(text) = self.player.as_ref().filter(|_| !audio_only).and_then(Player::subtitle_text) {
             let video = window::fit_rect(window, self.video_aspect);
             paint_subtitle(ui, &text, video, window, controls::bar_rect(window), alpha);
         }

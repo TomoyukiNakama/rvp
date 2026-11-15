@@ -29,6 +29,7 @@ pub use audio_out::AudioDevice;
 pub use frame::{GPU_16BIT, Matrix, PlaneLayout, VideoFrame};
 pub use hwaccel::HwDec;
 pub use subtitle::{SUBTITLE_EXTENSIONS, decode_text, is_subtitle_file};
+pub use subtitle::Around;
 use subtitle::{Cue, SubtitleTrack};
 use audio_out::AudioShared;
 use clock::Clock;
@@ -642,18 +643,26 @@ impl Player {
         self.sub_delay = (delay * 1000.0).round() / 1000.0;
     }
 
-    /// Subtitle text to show right now, if any.
-    pub fn subtitle_text(&self) -> Option<String> {
+    fn shown_track(&self) -> Option<&SubtitleTrack> {
         if !self.sub_visible {
             return None;
         }
-        let track = match self.sub_sel {
-            SubSel::Off => return None,
-            SubSel::Embedded(i) => self.sub_embedded.get(&i)?,
-            SubSel::External(i) => &self.sub_external.get(i)?.1,
-        };
-        let lines = track.active(self.position() - self.sub_delay);
+        match self.sub_sel {
+            SubSel::Off => None,
+            SubSel::Embedded(i) => self.sub_embedded.get(&i),
+            SubSel::External(i) => self.sub_external.get(i).map(|(_, t)| t),
+        }
+    }
+
+    /// Subtitle text to show right now, if any.
+    pub fn subtitle_text(&self) -> Option<String> {
+        let lines = self.shown_track()?.active(self.position() - self.sub_delay);
         (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
+    /// Lyrics (the shown subtitle track) around the current position, for audio-only files.
+    pub fn lyrics(&self) -> Option<Around<'_>> {
+        Some(self.shown_track()?.around(self.position() - self.sub_delay))
     }
 
     /// Seeks to the current position (after a track switch).
