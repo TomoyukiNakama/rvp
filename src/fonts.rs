@@ -21,14 +21,14 @@ pub fn font_paths() -> Vec<String> {
 pub fn install(ctx: &egui::Context, lang: &str) {
     let mut fonts = FontDefinitions::default();
     let fc = fc_lang(lang);
-    let mut queries = vec![format!("sans-serif:lang={fc}")];
+    let mut queries = vec![(format!("sans-serif:lang={fc}"), fc.clone())];
     if !is_cjk(&fc) {
-        queries.push("sans-serif:lang=ja".to_owned());
+        queries.push(("sans-serif:lang=ja".to_owned(), "ja".to_owned()));
     }
 
     let mut used = Vec::new();
-    for (i, query) in queries.iter().enumerate() {
-        let Some((path, index)) = fc_match(query) else {
+    for (i, (query, query_lang)) in queries.iter().enumerate() {
+        let Some((path, index)) = fc_match_lang(query, query_lang) else {
             log::warn!("fontconfig: nothing for {query}");
             continue;
         };
@@ -89,9 +89,41 @@ fn load(path: &str, index: u32) -> Option<Arc<FontData>> {
     }
 }
 
-/// Asks fontconfig for the best match of `pattern`: (file, face index).
-fn fc_match(pattern: &str) -> Option<(String, u32)> {
-    let out = Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]).output().ok()?;
+/// Region suffix of pan-CJK font families (Noto Sans CJK, Source Han Sans…) for a fontconfig language.
+fn cjk_region(fc: &str) -> Option<&'static str> {
+    Some(match fc {
+        "ja" => "JP",
+        "ko" => "KR",
+        "zh-cn" => "SC",
+        "zh-tw" => "TC",
+        "zh-hk" => "HK",
+        _ => return None,
+    })
+}
+
+/// The same pan-CJK family for another region: "Noto Sans CJK KR" → "Noto Sans CJK JP".
+fn regional_family(family: &str, region: &str) -> Option<String> {
+    let (base, suffix) = family.rsplit_once(' ')?;
+    (["JP", "KR", "SC", "TC", "HK"].contains(&suffix) && suffix != region).then(|| format!("{base} {region}"))
+}
+
+/// Best font for `pattern`, making sure a pan-CJK family is the face for `lang`.
+/// fontconfig's own configuration may rank e.g. the KR face first for `lang=ja`
+/// (Flatpak runtimes do): its kanji have Korean glyph shapes.
+fn fc_match_lang(pattern: &str, lang: &str) -> Option<(String, u32)> {
+    let (file, index, family) = fc_match(pattern)?;
+    if let Some(wanted) = cjk_region(lang).and_then(|r| regional_family(&family, r)) {
+        if let Some((f, i, fam)) = fc_match(&format!("{wanted}:lang={lang}")).filter(|m| m.2 == wanted) {
+            log::info!("fontconfig: {family} → {fam} for {lang}");
+            return Some((f, i));
+        }
+    }
+    Some((file, index))
+}
+
+/// Asks fontconfig for the best match of `pattern`: (file, face index, first family name).
+fn fc_match(pattern: &str) -> Option<(String, u32, String)> {
+    let out = Command::new("fc-match").args(["-f", "%{file}\n%{index}\n%{family[0]}", pattern]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -99,7 +131,8 @@ fn fc_match(pattern: &str) -> Option<(String, u32)> {
     let mut lines = text.lines();
     let file = lines.next()?.trim().to_owned();
     let index = lines.next().and_then(|i| i.trim().parse().ok()).unwrap_or(0);
-    (!file.is_empty()).then_some((file, index))
+    let family = lines.next().unwrap_or("").trim().to_owned();
+    (!file.is_empty()).then_some((file, index, family))
 }
 
 #[cfg(test)]
@@ -114,5 +147,9 @@ mod tests {
         assert_eq!(fc_lang("zh-Hant"), "zh-tw");
         assert_eq!(fc_lang("pt-BR"), "pt");
         assert!(is_cjk("ko") && !is_cjk("vi"));
+        assert_eq!(regional_family("Noto Sans CJK KR", "JP").as_deref(), Some("Noto Sans CJK JP"));
+        assert_eq!(regional_family("Source Han Sans SC", "TC").as_deref(), Some("Source Han Sans TC"));
+        assert_eq!(regional_family("Noto Sans CJK JP", "JP"), None);
+        assert_eq!(regional_family("DejaVu Sans", "JP"), None);
     }
 }
