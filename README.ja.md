@@ -94,7 +94,7 @@ Flatpak 版の設定ファイルは `~/.var/app/io.github.TomoyukiNakama.rvp/con
 
 | キー | 動作 |
 |---|---|
-| Space | 再生 / 一時停止 |
+| Space、映像をクリック | 再生 / 一時停止 |
 | ← / →、Shift + ← / → | 5 秒 / 60 秒シーク |
 | ↑ / ↓、ホイール | 音量 |
 | M | ミュート |
@@ -140,6 +140,12 @@ UI の文字列は [`locales/`](locales) にある [Project Fluent](https://proj
 
 `locales/*.ftl` へのプルリクエストを歓迎します。どのファイルも `en.ftl` と同じメッセージと変数を持つことを `cargo test` で検査します。
 複雑な文字の組み立てや右から左への表示が必要な文字（タイ語、インド系の文字、アラビア語など）は、egui がまだ対応していません。
+
+## 困ったとき
+
+rvp は起動のたびに `~/.local/state/rvp/rvp.log`（Flatpak 版は
+`~/.var/app/io.github.TomoyukiNakama.rvp/.local/state/rvp/rvp.log`）にログを書きます。前の 3 回分は `rvp.log.1`〜`rvp.log.3` に残ります。
+ウィンドウが反応しなくなったときは、そのことと、アプリの状態、止まっていた場所がログに記録されます。不具合を報告するときはログを添えてください。
 
 ## 開発
 

@@ -92,6 +92,10 @@ pub struct RvpApp {
     /// "rvp について" dialog (licences), when open.
     about: Option<AboutState>,
     debug_shot: Option<crate::debug_shot::DebugShot>,
+    /// Last logged window state (focused, minimized, maximized, fullscreen, occluded, size).
+    logged_viewport: Option<String>,
+    /// When the diagnostics state was last refreshed.
+    diag_state_at: f64,
 }
 
 impl RvpApp {
@@ -109,6 +113,7 @@ impl RvpApp {
             );
         }
         theme::apply(&cc.egui_ctx);
+        crate::diag::start_watchdog(cc.egui_ctx.clone());
 
         // Open the audio device up front: it plays a few hundred ms of silence
         // while starting, which would otherwise delay the first file.
@@ -172,6 +177,8 @@ impl RvpApp {
                 _ => None,
             },
             debug_shot: crate::debug_shot::DebugShot::from_env(),
+            logged_viewport: None,
+            diag_state_at: f64::NEG_INFINITY,
         };
         if first_run {
             app.config.save();
@@ -304,6 +311,7 @@ impl RvpApp {
             return;
         }
         self.end_handled = true;
+        log::info!("playback ended: {:?}", self.current_path);
         if let Some(path) = &self.current_path {
             self.resume.forget(path);
         }
@@ -647,6 +655,10 @@ impl RvpApp {
         // Files from the dialog thread.
         while let Ok(res) = self.dialog_rx.try_recv() {
             self.dialog_open = false;
+            log::info!(
+                "file dialog closed: {}",
+                res.as_ref().map_or_else(|| "cancelled".to_owned(), |r| format!("{:?}", r.paths))
+            );
             if let Some(r) = res
                 && !r.paths.is_empty()
             {
@@ -680,6 +692,7 @@ impl RvpApp {
             }
         }
         if !dropped.is_empty() {
+            log::info!("dropped: {dropped:?}");
             self.drag_hover = false;
             self.handle_dropped(ctx, dropped);
         }
@@ -698,6 +711,20 @@ impl RvpApp {
         if active {
             self.last_activity = now;
         }
+        // Input trail for diagnosing freezes (keys and clicks only, not motion).
+        ctx.input(|i| {
+            for e in &i.raw.events {
+                match e {
+                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                        log::debug!("key {key:?} {modifiers:?}");
+                    }
+                    egui::Event::PointerButton { button, pressed, pos, .. } => {
+                        log::debug!("pointer {button:?} {} at {pos:?}", if *pressed { "down" } else { "up" });
+                    }
+                    _ => {}
+                }
+            }
+        });
 
         // The about dialog takes the keyboard (its search field, Esc to close).
         if self.about.is_some() {
@@ -990,6 +1017,51 @@ impl RvpApp {
         }
     }
 
+    /// Window state changes go to the log; a state summary goes to the stall watchdog.
+    fn log_diagnostics(&mut self, ctx: &egui::Context) {
+        let (vp, now) = ctx.input(|i| {
+            let v = i.viewport();
+            let size = v.inner_rect.map(|r| r.size());
+            (
+                format!(
+                    "focused {:?} minimized {:?} maximized {:?} fullscreen {:?} occluded {:?} size {size:?}",
+                    v.focused, v.minimized, v.maximized, v.fullscreen, v.occluded
+                ),
+                i.time,
+            )
+        });
+        if self.logged_viewport.as_ref() != Some(&vp) {
+            log::debug!("window: {vp}");
+            self.logged_viewport = Some(vp.clone());
+        }
+        if now - self.diag_state_at >= 0.5 {
+            self.diag_state_at = now;
+            let player = self.player.as_ref().map_or_else(
+                || "none".to_owned(),
+                |p| {
+                    format!(
+                        "{:?} at {:.2}/{:?} video {} wakeup {:?}",
+                        p.state(),
+                        p.position(),
+                        p.info().duration,
+                        p.info().has_video,
+                        p.next_wakeup()
+                    )
+                },
+            );
+            crate::diag::set_state(format!(
+                "file {:?}; player {player}; drag_hover {} dialog_open {} about {} playlist {}/{} panel {}; window {vp}",
+                self.current_path,
+                self.drag_hover,
+                self.dialog_open,
+                self.about.is_some(),
+                self.playlist.current_index().map_or(0, |i| i + 1),
+                self.playlist.len(),
+                self.show_playlist,
+            ));
+        }
+    }
+
     fn paint_osd(&mut self, ui: &egui::Ui, window: Rect) {
         let now = ui.input(|i| i.time);
         let Some(osd) = &self.osd else { return };
@@ -1066,6 +1138,8 @@ impl eframe::App for RvpApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::diag::ui_pass();
+        self.log_diagnostics(&ctx);
         self.handle_input(&ctx);
         self.update_video(&ctx);
         self.persist(&ctx);
@@ -1090,10 +1164,22 @@ impl eframe::App for RvpApp {
         // Window body.
         ui.painter().rect_filled(window, window_radius, color::BG);
 
-        // Background interaction: drag to move the window, double-click for fullscreen.
+        // Background interaction: click to play/pause, drag to move the window,
+        // double-click for fullscreen. The first click of a double-click has already
+        // toggled pause, so the second one toggles it back (same as mpv).
         let bg = ui.interact(window, Id::new("window_bg"), Sense::click_and_drag());
         if bg.double_clicked() {
             Self::toggle_fullscreen(&ctx);
+            if let Some(p) = self.player.as_mut() {
+                p.toggle_pause();
+            }
+            self.osd = None;
+        } else if bg.clicked() {
+            if let Some(p) = self.player.as_mut() {
+                p.toggle_pause();
+                let text = t!(if p.state() == PlayState::Playing { "osd-play" } else { "osd-pause" });
+                self.show_osd(&ctx, text, false);
+            }
         } else if bg.drag_started() && !fullscreen {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
             self.inject_release = true;

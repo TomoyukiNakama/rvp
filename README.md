@@ -94,7 +94,7 @@ all files (needed for folders and automatic subtitle detection) but writes only 
 
 | Key | Action |
 |---|---|
-| Space | Play / pause |
+| Space, click the video | Play / pause |
 | ← / →, Shift + ← / → | Seek 5 s / 60 s |
 | ↑ / ↓, mouse wheel | Volume |
 | M | Mute |
@@ -141,6 +141,13 @@ menu (name it with `language-name = …`). rvp reloads these files while it is r
 Pull requests for `locales/*.ftl` are welcome; `cargo test` checks that every file has the same messages and
 variables as `en.ftl`. Scripts that need complex text shaping or right-to-left layout (Thai, Indic scripts, Arabic…)
 are not supported by egui yet.
+
+## Troubleshooting
+
+rvp writes a log of every run to `~/.local/state/rvp/rvp.log` (Flatpak:
+`~/.var/app/io.github.TomoyukiNakama.rvp/.local/state/rvp/rvp.log`); the previous three runs are kept as
+`rvp.log.1` … `rvp.log.3`. If the window stops responding, the log records it together with the app state and
+where it was stuck. Please attach the log when reporting a problem.
 
 ## Development
 

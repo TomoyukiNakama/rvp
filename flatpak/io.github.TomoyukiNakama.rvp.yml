@@ -36,6 +36,9 @@ modules:
     buildsystem: simple
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
+      # Keep symbols and line tables in the binary: backtraces in rvp.log (diag.rs) need them.
+      strip: false
+      no-debuginfo: true
       env:
         CARGO_HOME: /run/build/rvp/cargo
         CARGO_NET_OFFLINE: 'true'

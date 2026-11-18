@@ -84,8 +84,16 @@ Spec and roadmap: `SPEC.md` (Japanese). Phases are listed in SPEC §6; keep SPEC
   User `.ftl` files in `~/.config/rvp/locales/` override/add languages and are hot-reloaded (`poll_reload`).
   New UI strings: add the id to **every** `locales/*.ftl` (`cargo test` checks ids and variables match `en.ftl`).
   egui has no shaping/RTL, so no Thai/Indic/Arabic UI. Picker: `ui/language.rs` (title bar).
+- `diag.rs` — every run logs (`warn,rvp=debug`; `RUST_LOG` overrides) to stderr and `<state dir>/rvp.log`
+  (`~/.local/state/rvp/`, Flatpak `~/.var/app/<id>/.local/state/rvp/`; previous runs `rvp.log.1..3`, 20 MB cap).
+  Panic hook logs a backtrace. Watchdog thread: if no UI pass for 2 s it requests a repaint; no pass 5 s later =
+  stall → logs `set_state` summary + stacks of registered threads (main, rvp-dnd) captured via SIGUSR2.
+  App logs drops, dialog results, keys/clicks, window state changes, playback end. Release builds keep line tables
+  (Flatpak: `strip: false`, `no-debuginfo: true`) so those backtraces are readable.
 - `fonts.rs` — UI font per language via `fc-match sans-serif:lang=<lang>` (+ Japanese CJK fallback for non-CJK
   languages), re-installed on language switch; Phosphor icon font (`ui::widgets::icon_font`).
+  Pan-CJK families (Noto Sans CJK / Source Han) are forced to the language's region face (`fc_match_lang`):
+  the Flatpak runtime's fontconfig ranks the KR face first even for `lang=ja`.
 
 ## Windowing gotchas (Wayland)
 - winit 0.30 has no Wayland drag-and-drop: `wayland_dnd.rs` joins winit's `wl_display` (`Backend::from_foreign_display`)

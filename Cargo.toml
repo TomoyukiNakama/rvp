@@ -11,6 +11,7 @@ anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18"
 crossbeam-channel = "0.5.17"
+libc = "0.2.191"
 directories = "6.0.0"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 egui = "0.36"
@@ -30,6 +31,10 @@ toml = "1.2.1"
 unic-langid = "0.9.6"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
+
+# File/line info so backtraces in the log (panics, UI stall watchdog: src/diag.rs) are readable.
+[profile.release]
+debug = "line-tables-only"
 
 # Keep debug builds fast enough for real-time video.
 [profile.dev]

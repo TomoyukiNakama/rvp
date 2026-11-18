@@ -2642,6 +2642,7 @@ dependencies = [
  "fluent-bundle",
  "fluent-syntax",
  "image",
+ "libc",
  "log",
  "raw-window-handle",
  "rfd",

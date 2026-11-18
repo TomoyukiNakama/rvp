@@ -5,6 +5,7 @@ mod about;
 mod app;
 mod config;
 mod debug_shot;
+mod diag;
 mod fonts;
 mod player;
 mod playlist;
@@ -34,7 +35,7 @@ fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
 }
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("rvp=info")).init();
+    diag::init_logging();
 
     if let Err(e) = player::init() {
         eprintln!("{e:#}");

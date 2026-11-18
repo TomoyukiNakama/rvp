@@ -66,6 +66,7 @@ pub unsafe fn start(display: NonNull<c_void>, tx: Sender<DndEvent>, repaint: egu
 
     let mut state = State { tx, repaint, current: None };
     std::thread::Builder::new().name("rvp-dnd".into()).spawn(move || {
+        crate::diag::register_thread("rvp-dnd");
         // Keep the protocol objects alive for the lifetime of the thread.
         let _keep = (manager, seat, _device);
         loop {
@@ -140,7 +141,15 @@ impl Dispatch<WlDataDevice, ()> for State {
                 if let Some(old) = state.current.take() {
                     old.destroy();
                 }
-                let Some(offer) = id else { return };
+                let Some(offer) = id else {
+                    log::debug!("dnd: enter without offer");
+                    return;
+                };
+                log::debug!(
+                    "dnd: enter (offer v{}, types {:?})",
+                    offer.version(),
+                    offer.data::<OfferMimes>().map(|m| m.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+                );
                 if has_uri_list(&offer) {
                     offer.accept(serial, Some(URI_LIST.into()));
                     if offer.version() >= 3 {
@@ -153,17 +162,23 @@ impl Dispatch<WlDataDevice, ()> for State {
                 state.current = Some(offer);
             }
             wl_data_device::Event::Leave => {
+                log::debug!("dnd: leave");
                 if let Some(offer) = state.current.take() {
                     offer.destroy();
                 }
                 state.send(DndEvent::Hover(false));
             }
             wl_data_device::Event::Drop => {
-                let Some(offer) = state.current.take() else { return };
+                let Some(offer) = state.current.take() else {
+                    log::debug!("dnd: drop without offer");
+                    return;
+                };
+                log::debug!("dnd: drop, reading {URI_LIST}");
                 state.send(DndEvent::Hover(false));
                 if has_uri_list(&offer) {
                     match read_offer(&offer, conn) {
                         Ok(text) => {
+                            log::debug!("dnd: read {} bytes", text.len());
                             let paths = parse_uri_list(&text);
                             if !paths.is_empty() {
                                 state.send(DndEvent::Drop(paths));
@@ -176,6 +191,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                     }
                 }
                 offer.destroy();
+                log::debug!("dnd: drop done");
             }
             wl_data_device::Event::Selection { id: Some(offer) } => {
                 // Clipboard offers to *our* device are unused (egui has its own).
